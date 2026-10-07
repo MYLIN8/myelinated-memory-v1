@@ -11,8 +11,54 @@
     "product": ["README.md", "docs/REMEDIATION.md", "SKILL.md"],
     "sales_marketing": []
   },
-  "heads_note": "Round 2: Sales & Marketing was mapped but had NO work; recorded rather than inventing activity, with a 2-analyst pod because the work was 3 tightly coupled files. Round 3 (this request): a review pod of 4 analysts was run in parallel, one per angle (engine internals, harness/statistics, product claims and interface drift, competitive/systems fairness), and every load-bearing finding was re-derived by the coordinator with its own probe before it entered the plan. Sales & Marketing now has real, non-invented work (W10: positioning, a choose-this-if table, and the skill's trigger description), so it is no longer an empty department. Round 3.5 (this request): an offline self-test pass with no API key re-ran every check, re-derived each live defect, and found six more (D13-D18); the ordered fix plan is docs/FIX-PLAN.md, the two engine-testable ones are registered in test_engine.py, and the pass changed no engine or harness behaviour. Round 4 (this request): three analyst pods (engine internals, the benchmark instrument, the front page) plus the coordinator's own re-derivation, which produced docs/ROUND4-DESIGN.md - the eighteen defects reduce to two root causes, and the measured decay coupling (archived 636 -> 0, +33% characters per memory) is why the engine and instrument fixes have to land together. The same request published the repository: the engine, the harness and the results were untracked until this push, so no front-page claim could be reproduced from the repository before it. Round 4 shipped (this request): the mechanism in docs/ROUND4-DESIGN.md and the instrument repairs landed as one change, the three allocator controls ran, and the attribution question the design posed is answered against the engine - M3k (BM25's ranking in the engine's own packer) leads the suite, so the budget win is allocation, not store. The LLM judge is no longer blocked: a free-tier Gemini key is integrated and verified live, though the quota ran out before any harness-level LLM-judged run finished. The mechanism shipped inside the existing arms rather than as the M12 arm the design proposed, and M11/M12 remain unbuilt.",
-  "phase": "round-4-shipped-and-measured: the mechanism and the instrument repairs landed; the decay claim, the ranking gap and the LLM-judged run stay open",
+  "heads_note": "Round 2: Sales & Marketing was mapped but had NO work; recorded rather than inventing activity, with a 2-analyst pod because the work was 3 tightly coupled files. Round 3 (this request): a review pod of 4 analysts was run in parallel, one per angle (engine internals, harness/statistics, product claims and interface drift, competitive/systems fairness), and every load-bearing finding was re-derived by the coordinator with its own probe before it entered the plan. Sales & Marketing now has real, non-invented work (W10: positioning, a choose-this-if table, and the skill's trigger description), so it is no longer an empty department. Round 3.5 (this request): an offline self-test pass with no API key re-ran every check, re-derived each live defect, and found six more (D13-D18); the ordered fix plan is docs/FIX-PLAN.md, the two engine-testable ones are registered in test_engine.py, and the pass changed no engine or harness behaviour. Round 4 (this request): three analyst pods (engine internals, the benchmark instrument, the front page) plus the coordinator's own re-derivation, which produced docs/ROUND4-DESIGN.md - the eighteen defects reduce to two root causes, and the measured decay coupling (archived 636 -> 0, +33% characters per memory) is why the engine and instrument fixes have to land together. The same request published the repository: the engine, the harness and the results were untracked until this push, so no front-page claim could be reproduced from the repository before it. Round 4 shipped (this request): the mechanism in docs/ROUND4-DESIGN.md and the instrument repairs landed as one change, the three allocator controls ran, and the attribution question the design posed is answered against the engine - M3k (BM25's ranking in the engine's own packer) leads the suite, so the budget win is allocation, not store. The LLM judge is no longer blocked: a free-tier Gemini key is integrated and verified live, though the quota ran out before any harness-level LLM-judged run finished. The mechanism shipped inside the existing arms rather than as the M12 arm the design proposed, and M11/M12 remain unbuilt. Round 5 (this request): the prior-weight question was taken to the criterion F18 had already frozen and it passed on both hold-out seeds, so the prior is demoted to a tie-breaker and PRIOR_WEIGHT ships at 0.0; the sweep instrument had to be repaired first, because benchmarks/tune_probe.py raised TypeError on every invocation and had therefore never produced the curve the front page cited; the engine's pre-packing rank order is now recorded, so nDCG@10 and nDCG@10 packed finally differ for the engine arms; M11 and M12 exist; and an NVIDIA judge was added beside the Gemini and OpenAI providers. Two things were corrected by measurement against the design's expectation - the candidate caps (M12 reproduces M10 exactly) are not the cause, and the engine's nDCG columns had been scoring the allocator.",
+  "phase": "round-5-shipped-and-measured: the engine now matches the best non-engine arm on hit rate and beats it on characters per hit; the residual gap is ordering quality (nDCG) and the LoCoMo tier; the decay claim and the LLM-judged run stay open",
+  "round5_strategy": {
+    "artifact": "docs/ROUND5-STRATEGY.md",
+    "produced_by": "chief of staff: recon -> 3 parallel workers (engine parameter seams, judge provider, doc corrections) -> coordinator owned the diagnosis, the measurement and the shipped change",
+    "question": "The engine must match or beat the other memory models on this benchmark, or the report says why it cannot.",
+    "instrument_repair": "benchmarks/tune_probe.py unpacked run_bench.evaluate()'s (records, ledgers) return as a bare dict, so every sweep raised 'TypeError: tuple indices must be integers or slices, not str' and the PRIOR_WEIGHT curve quoted in docs/TESTING.md 5 and README 5.1 had never actually been produced by the tool. Fixed; the internal control then held.",
+    "diagnosis": "The engine already had a real ranker (TF-IDF cosine over the live store) fused with strength as value = sim + PRIOR_WEIGHT x strength. Similarity is a cosine in [0,1] and strength is in [0,1], so the fusion adds a query-independent constant to the ordering: a strongly myelinated memory that says nothing about the question can outrank the memory that answers it. The prior is useful for allocation and harmful for ordering.",
+    "controls": {
+      "M11": "M10 with prior_weight=0 - isolates the ordering dilution",
+      "M12": "M10 with max_candidates/max_postings_scan/recall_pool unbounded - isolates candidate generation. It reproduces M10 EXACTLY on both seeds (0.830 hit rate, 0.677 nDCG, 1596 chars/hit, 0.433 LoCoMo), so the caps are measured NOT to be the cause: the capped path feeds duplicate detection, not query ranking."
+    },
+    "frozen_criterion": "docs/FIX-PLAN.md F18, on hold-out seeds 3-4: hit rate >= 0.874, nDCG@10 >= 0.672, chars/hit <= 1336, task success >= 0.533",
+    "measured": {
+      "command": "python3 benchmarks/run_bench.py --tier all --skip-scale --seed 3 (and --seed 4), 206 queries per arm, offline oracle judge, 2200-char budget",
+      "M11_seed3": "task 0.539, hit 0.893, nDCG@10 0.702, nDCG@10 packed 0.690, chars/hit 1276, LoCoMo 0.683, leak_supersession 0.000, leak_decay_only 1.000",
+      "M11_seed4": "task 0.539, hit 0.893, nDCG@10 0.697, nDCG@10 packed 0.689, chars/hit 1283, LoCoMo 0.683",
+      "M3k_previous_leader": "hit 0.893/0.893, nDCG 0.734/0.731, packed 0.737/0.733, chars/hit 1294/1301, LoCoMo 0.717",
+      "M4_cosine_baseline": "task 0.563, hit 0.874, nDCG 0.732/0.727, chars/hit 1540/1543, LoCoMo 0.600",
+      "M8_round4_engine": "task 0.558, hit 0.835, nDCG 0.693/0.688, packed 0.641, chars/hit 1572, LoCoMo 0.433",
+      "M10_hero": "task 0.553, hit 0.830, nDCG 0.677/0.672, packed 0.615, chars/hit 1596/1597, LoCoMo 0.433",
+      "verdict": "F18 PASSES on both hold-out seeds, all four thresholds. Against the previous leader M11 ties hit rate (0.893 against 0.893) and task success (0.539), wins characters per hit (1276/1283 against 1294/1301) and ties the supersession leak (0.000), trailing on nDCG (0.702/0.697 against 0.734/0.731) and LoCoMo (0.683 against 0.717). Against M4, the same cosine ranker with no engine around it, M11 wins hit rate, characters per hit and LoCoMo while trailing on task success and nDCG.",
+      "sweep_rerun": "tune_probe seed 0: dev tiers curated/synthetic/staleness hit rate 0.979 at 0.0 and 1.000 at 0.1-1.0, nDCG 0.856 at 0.0 / 0.859 at 0.1 / 0.847 at 0.2 / 0.840 at 0.35; locomo 0.683 at 0.0, 0.567 at 0.1, 0.517 at 0.2, 0.433 at 0.35, 0.433 at 0.5, 0.317 at 1.0"
+    },
+    "shipped": [
+      "PRIOR_WEIGHT 0.35 -> 0.0 in scripts/myelinate.py, with LEGACY_PRIOR_WEIGHT = 0.35 pinning M6-M10 and M12 so the published round-4 rows stay reproducible; M11 leaves prior_weight=None so it tracks the shipped default rather than hardcoding the measured value twice",
+      "RecallResult.ranked_ids (the pre-packing rank order) set at recall()'s single return point, and MyelinatedArm._recall now returns it - the D8/F21 defect: the arm returned only (text, used_ids), so the harness fell back to the packed order and every engine arm's two nDCG columns were identical (M11 0.690/0.690, M8 0.641/0.641) while the BM25 arms' differed (M3k 0.734/0.737). Hit rate, chars/hit, task success and LoCoMo are unchanged; engine nDCG@10 rose (M11 0.690 -> 0.702, M8 0.641 -> 0.693 on seed 3) and the allocator's own cost is now visible in the packed column (M11 0.012, M8 0.052)",
+      "test_engine.py guards the pin, the shipped default and that the two differ, so a future edit cannot silently turn M6-M10 into M11 and erase the before/after evidence",
+      "benchmarks/tune_probe.py unpacking fixed",
+      "NvidiaJudge and the NVIDIA NIM embeddings path in benchmarks/engines.py (see open_items)"
+    ],
+    "next_levers": [
+      "Measure pool recall@k with engine.candidate_pool(query) (added this round, read-only): if pool recall ~= hit rate the residual loss is candidate generation, if pool recall >> hit rate it is ordering. M11's ranker is a cosine and M4's is the same cosine, yet M4 records 0.732 nDCG and M11 0.702, and the allocator accounts for only 0.012 of that, so ~0.02 is lost before packing.",
+      "LoCoMo (0.683 vs M3k's 0.717) is paraphrastic and multi-session, which is where term-overlap scoring is weakest and where the dense arm (M5, now reachable through NVIDIA NIM) should pay; it needs no engine change.",
+      "With nDCG@10 and nDCG@10 packed now distinct, the value-per-char rule and the rank order can be scored separately: the allocation rule should choose the set and the rank order should decide the sequence."
+    ],
+    "limitations": [
+      "Two hold-out seeds, not the five the F22 pooled-seed protocol requires",
+      "No model-scored run exists; every number is the offline oracle judge's",
+      "The NVIDIA dense path is implemented and its request shape is asserted offline but was not exercised against the live endpoint from this host",
+      "benchmarks/RESULTS.md was NOT regenerated and still holds round-4 columns measured under the old nDCG fallback",
+      "The round-3 PRIOR_WEIGHT rows are superseded: the re-run reproduces the direction and the LoCoMo effect but not every digit, because round 4 changed the engine underneath them"
+    ],
+    "suite_counts": {
+      "test_engine": "170 checks (was 139)",
+      "test_llm_judge": "71 assertions (was 60)"
+    }
+  },
   "round3_plan": {
     "artifact": "docs/PLAN.md",
     "produced_by": "head of staff: intake -> 4 analyst pods in parallel -> coordinator re-verified every load-bearing claim -> plan",
@@ -28,8 +74,8 @@
       "artifact": "docs/TESTING.md",
       "pods": "3 independent read-only briefs: testing coverage, constant provenance, metric correctness. One pod wrote files despite the brief; every claim of its that reached a document was re-derived by the coordinator before publication, and its unverified stopword-asymmetry flag was closed by another pod after checking the code.",
       "delivered": ["benchmarks/test_engine.py (W0.8: 69 checks, green, known-defect registry for W0.1 and W0.7)", "benchmarks/tune_probe.py (sweep harness; never writes the report)", "docs/TESTING.md (inventory, coverage map, ranked gaps, protocol, sweep list)"],
-      "headline_finding": "The engine had no automated check at all while holding every real defect; and the one constant now measured - PRIOR_WEIGHT - is hand-set at 0.35, which is the second-worst point on its own sweep curve. At 0.00 the same engine scores 0.893 hit rate (vs 0.825), 0.672 nDCG (vs 0.606), 1265 chars/hit (vs 1589) and 0.683 on LoCoMo (vs 0.400).",
-      "status": "exploratory only: one seed, swept on the report's own 206 queries, not pre-registered. The confirmatory criterion is frozen in W1.2 and nothing on the front page changes until a hold-out run passes it."
+      "headline_finding": "The engine had no automated check at all while holding every real defect; and the one constant now measured - PRIOR_WEIGHT - is hand-set at 0.35, which is the second-worst point on its own sweep curve. At 0.00 the same engine scores 0.893 hit rate (vs 0.825), 0.672 nDCG (vs 0.606), 1265 chars/hit (vs 1589) and 0.683 on LoCoMo (vs 0.400). Round 5 re-measured this on the repaired instrument and then confirmed it out-of-sample: the prior is now demoted to a tie-breaker (PRIOR_WEIGHT = 0.0).",
+      "status": "exploratory when written: one seed, swept on the report's own 206 queries, not pre-registered. Round 5 ran the confirmatory test F18 had frozen - hold-out seeds 3-4, with the sweep's internal control holding after the sweep tool's crash was repaired - and it PASSED, so the front page did change. See round5_strategy."
     }
   },
   "round3_5_fix_plan": {
@@ -161,8 +207,8 @@
         "note": "median of 3 timed passes; wall clock on a shared host"
       },
       "suites": {
-        "test_engine": "139 checks, no KNOWN DEFECT line",
-        "test_llm_judge": "60 assertions"
+        "test_engine": "170 checks, no KNOWN DEFECT line (139 at the round-4 run)",
+        "test_llm_judge": "71 assertions (60 at the round-4 run)"
       }
     },
     "attribution": "ANSWERED, against the engine. M3k (BM25's ranking packed by the engine's own value-per-char packer) leads the whole suite: hit rate 0.893 against the best engine arm M8's 0.835, 1296 characters per evidence hit against 1572, and 0.717 against 0.433 on LoCoMo. M3t (BM25 ranked, truncated with the previously-unused common.downgrade()) reproduces BM25 exactly (0.864 at 1343 vs 1336) and M3p sits between at 0.879 / 1317, so the ladder and plain truncation explain little and the packer is where the budget win lives. Per the design's pre-registered reading, the published budget-efficiency claim is about ALLOCATION, not the store, and the report now prints this next to the verdict (BM-007's question, answered).",
@@ -182,7 +228,7 @@
     },
     "deviations": [
       "the mechanism shipped inside the existing arms as a labelled protocol change (SCHEMA_VERSION 3 plus the auto_supersede flag) instead of as an 11th arm M12, so 'does the unified store still add anything' has no arm of its own",
-      "M11 (engine cosine with PRIOR_WEIGHT = 0 on hold-out seeds) was never built, so the prior-weight question stays open on the front page",
+      "M11 (engine cosine with PRIOR_WEIGHT = 0 on hold-out seeds) was never built, so the prior-weight question stays open on the front page (round 5: built, and it PASSED the frozen criterion on both hold-out seeds, so the prior is demoted to a tie-breaker)",
       "details and dropped_ids from the design's record shape were not built",
       "the scale corpus still cannot supply 50 warm queries, so the latency percentiles remain thin"
     ],
@@ -190,7 +236,7 @@
       "criterion 5 (decay alone) and criterion 7 (beat both flat baselines)",
       "no harness-level LLM-judged run: the Gemini judge is integrated and verified live (two real calls returned an answer and a 1.0 grade; a real 429 produced nine backoff retries then a JudgeError counted as errored, never scored as a wrong answer) but the free-tier quota was exhausted during verification",
       "the decay-only leak moved for M6 (1.000 -> 0.000, with hit_rate_decay_only 1.000) and M2, but not for M9/M10 - the opposite order to what Rule 2 predicted, on a suite of 3 scenarios with one query each, so it is a lead and not a result",
-      "BM-009's retrieval floor, BM-010's claims register, and the M11/M12 arms"
+      "BM-009's retrieval floor and BM-010's claims register (round 5 built the M11/M12 arms and answered the prior-weight question)"
     ],
     "implemented": true
   },
@@ -250,6 +296,21 @@
       "ingest_10k_s": 5.1,
       "refresh_10k_s": 2.89,
       "supersedes": "rounds 1-2 decay and tier figures (BM-006); the round-4 run reproduces the non-decay figures on the same tiers and seed"
+    },
+    "round5": {
+      "command": "python3 benchmarks/run_bench.py --tier all --skip-scale --seed 3 (and --seed 4), oracle judge, 206 queries per arm, plus python3 benchmarks/tune_probe.py --tiers locomo",
+      "verdict": "M11 PASSES the F18 criterion frozen before the run (hit 0.893 >= 0.874; nDCG 0.702/0.697 >= 0.672; chars/hit 1276/1283 <= 1336; task 0.539 >= 0.533) on both hold-out seeds",
+      "best_engine_arm": "M11 myelinated +lexical ranking",
+      "best_engine_hit_rate": 0.893,
+      "best_engine_chars_per_hit": 1276,
+      "best_engine_ndcg": 0.702,
+      "best_baseline_hit_rate": 0.893,
+      "best_baseline": "M3k BM25 +engine packer (0.893 hit rate, 0.734 nDCG, 1294 chars/hit, 0.717 LoCoMo)",
+      "headline": "The engine now MATCHES the best non-engine arm on hit rate (0.893 against 0.893), ties it on task success and on the supersession leak, and BEATS it on characters per hit (1276/1283 against 1294/1301). It still trails on nDCG (0.702/0.697 against 0.734/0.731) and on the LoCoMo tier (0.683 against 0.717).",
+      "leak_with_supersession": 0.0,
+      "leak_decay_only": 1.0,
+      "supersedes": "the round-3 PRIOR_WEIGHT rows, which were measured on a crashing instrument and a pre-round-4 engine; the re-run reproduces the direction and the LoCoMo effect but not every digit",
+      "instrument_defect": "benchmarks/tune_probe.py raised TypeError on every invocation ('tuple indices must be integers or slices, not str') because it unpacked run_bench.evaluate()'s (records, ledgers) return as a bare dict - so the curve cited on the front page had never been produced by the tool"
     }
   },
   "open_items": [
@@ -271,8 +332,8 @@
       "id": "LLM",
       "title": "Add an LLM judge",
       "status": "integrated_and_verified_live_full_run_pending",
-      "result": "No longer blocked. A free-tier Gemini key is integrated as a first-class judge, the protocol is verified against the local stub (60 assertions), and the live endpoint was verified: two real calls returned an answer and a 1.0 grade, and a real HTTP 429 produced nine backoff retries over 13.6s then a JudgeError that run_bench records as judge_state 'errored' and never scores as a wrong answer. What is still missing is a completed harness-level LLM-judged table, because the free-tier quota was exhausted during verification. The default model had to be corrected: gemini-2.0-flash returns HTTP 404 'no longer available, use models/gemini-3.8-flash'.",
-      "evidence": "python3 benchmarks/test_llm_judge.py -> 'llm judge ok: 60 assertions'; two live calls via benchmarks/judge.py -> describe() 'LLM judge (gemini, gemini-3.8-flash)', answer 'staging cluster', grade 1.0; a later call -> HTTP 429, counters retries 9, calls 0"
+      "result": "No longer blocked. A free-tier Gemini key is integrated as a first-class judge, the protocol is verified against the local stub (71 assertions; 60 at the round-4 run), and a third provider joined in round 5 (NvidiaJudge, --judge nvidia, env NVIDIA_CLOUD_KEY, base https://integrate.api.nvidia.com/v1). The live endpoint was verified: two real calls returned an answer and a 1.0 grade, and a real HTTP 429 produced nine backoff retries over 13.6s then a JudgeError that run_bench records as judge_state 'errored' and never scores as a wrong answer. What is still missing is a completed harness-level LLM-judged table, because the free-tier quota was exhausted during verification. The default model had to be corrected: gemini-2.0-flash returns HTTP 404 'no longer available, use models/gemini-3.8-flash'.",
+      "evidence": "python3 benchmarks/test_llm_judge.py -> 'llm judge ok: 71 assertions'; two live calls via benchmarks/judge.py -> describe() 'LLM judge (gemini, gemini-3.8-flash)', answer 'staging cluster', grade 1.0; a later call -> HTTP 429, counters retries 9, calls 0. The NVIDIA provider and its key handling are covered offline only, and --judge nvidia with no key exits 2 with a clear message rather than a traceback."
     },
     {
       "id": "R1",
@@ -315,8 +376,8 @@
       "id": "TEST-GAP",
       "title": "The engine has no automated checks",
       "status": "done_engine_suite_green",
-      "result": "Closed: benchmarks/test_engine.py now runs 139 checks with exit 0 and no KNOWN DEFECT line, covering the score and decay arithmetic, tier thresholds, rendering caps, the budget guarantee on both recall paths, retired-memory exclusion, pinning, the D13/D14 split, persistence and store-path precedence, and the v2 score_at migration. It began as the review's proposed suite against a file that had no assertions at all: scripts/myelinate.py ended at sys.exit(main()) with zero assertions, and common.py, metrics.py and run_bench.py had no __main__ either. At that point the ~48 existing assertions tested the harness only (stats 12, stub 5, judge 7, engines 2, test_llm_judge 22) plus synthetic.py's scenario validator, and four shipped defects lived in the untested file: compounding decay, retire() not invalidating the similarity index, double tokenisation on add(), and a clustering pass whose output nothing reads. Three of those four are now repaired and asserted (the fourth is a cost item, W3); the registry is empty and the assertions that used to report a defect as LIVE now assert the fixed behaviour.",
-      "evidence": "python3 benchmarks/test_engine.py -> 'engine ok: 139 checks' with no KNOWN DEFECT line; docs/TESTING.md 1-4 holds the original proposed assertions, three of which failed against the pre-round-4 code by design because they documented live defects"
+      "result": "Closed: benchmarks/test_engine.py now runs 170 checks with exit 0 and no KNOWN DEFECT line, covering the score and decay arithmetic, tier thresholds, rendering caps, the budget guarantee on both recall paths, retired-memory exclusion, pinning, the D13/D14 split, persistence and store-path precedence, the v2 score_at migration, the settable recall parameters (prior_weight and the three candidate ceilings, 0 meaning unbounded), the read-only candidate_pool diagnostic, and the round-5 pin that keeps M6-M10/M12 on the legacy prior weight while M11 tracks the shipped default. It began as the review's proposed suite against a file that had no assertions at all: scripts/myelinate.py ended at sys.exit(main()) with zero assertions, and common.py, metrics.py and run_bench.py had no __main__ either. At that point the ~48 existing assertions tested the harness only (stats 12, stub 5, judge 7, engines 2, test_llm_judge 22) plus synthetic.py's scenario validator, and four shipped defects lived in the untested file: compounding decay, retire() not invalidating the similarity index, double tokenisation on add(), and a clustering pass whose output nothing reads. Three of those four are now repaired and asserted (the fourth is a cost item, W3); the registry is empty and the assertions that used to report a defect as LIVE now assert the fixed behaviour.",
+      "evidence": "python3 benchmarks/test_engine.py -> 'engine ok: 170 checks' with no KNOWN DEFECT line; docs/TESTING.md 1-4 holds the original proposed assertions, three of which failed against the pre-round-4 code by design because they documented live defects"
     },
     {
       "id": "R9",
@@ -333,10 +394,31 @@
     },
     {
       "id": "M11M12",
-      "title": "The two arms the design proposed were never built",
-      "status": "open_deviation",
-      "result": "M11 (engine cosine with PRIOR_WEIGHT = 0 on hold-out seeds) and M12 (engine cosine with the unified mechanism) do not exist. The mechanism shipped inside the existing arms as a labelled protocol change (SCHEMA_VERSION 3 plus the auto_supersede flag), so 'does the unified store still add anything' has no arm of its own and the prior-weight sweep remains exploratory on the report's own queries.",
-      "evidence": "engines.ARM_ORDER and build_arms() contain M3t/M3p/M3k and no M11/M12; docs/ROUND4-DESIGN.md 0 records the deviation"
+      "title": "The two arms the design proposed were never built (round 4)",
+      "status": "resolved_in_round_5",
+      "result": "Both exist now. M11 (engine cosine with PRIOR_WEIGHT = 0 on hold-out seeds) was built and PASSED the criterion F18 had frozen before the run, so the prior is demoted to a tie-breaker and PRIOR_WEIGHT ships at 0.0; it is the best engine arm at 0.893 hit rate / 0.702 nDCG / 1276 chars/hit / 0.539 task success on seed 3. M12 was built as a different arm from the one the design described - not 'engine cosine with the unified mechanism' (that shipped as a labelled protocol change inside the existing arms) but the candidate-cap control: M10 with max_candidates/max_postings_scan/recall_pool unbounded, which reproduces M10 exactly on both seeds and therefore measures the caps out as the cause of the ranking deficit.",
+      "evidence": "engines.ARM_ORDER and build_arms() now list 15 offline arms including M11 and M12; engines.py's self-check derives its expected list from ARM_ORDER rather than a literal; run_bench.py's engine-name lists derive from ARM_ORDER too, so a new arm cannot be invisible to the verdict. See round5_strategy."
+    },
+    {
+      "id": "SWEEP-TOOL",
+      "title": "The constant-sweep instrument had never run",
+      "status": "fixed",
+      "result": "benchmarks/tune_probe.py unpacked run_bench.evaluate()'s (records, ledgers) two-tuple as a bare dict, so every sweep died with 'TypeError: tuple indices must be integers or slices, not str'. The PRIOR_WEIGHT curve quoted in README 5.1 and docs/TESTING.md 5 was therefore never produced by the tool that is supposed to produce it, and the front page read as though the re-run were merely deferred. Fixed; the control now holds (the committed 0.35 row reproduced the published M8 figures exactly at the time of the original sweep, and the re-run reproduces the committed round-4 M8 row of 0.433 on LoCoMo).",
+      "evidence": "python3 benchmarks/tune_probe.py --tiers locomo --values 0,0.1,0.2,0.35,0.5,1.0 -> 0.683 / 0.567 / 0.517 / 0.433 / 0.433 / 0.317 after the one-line unpacking fix"
+    },
+    {
+      "id": "RANK-ORDER",
+      "title": "D8/F21 was recorded as fixed, but the engine arm never supplied a rank order",
+      "status": "fixed",
+      "result": "The round-4 note says nDCG and MRR are scored on the arm rank order with the packed order beside it, and for the BM25 arms that is true. For every engine arm it was not: MyelinatedArm._recall returned only (text, used_ids), so the harness fell back to the packed order and the two columns were identical (M11 0.690/0.690, M8 0.641/0.641) while the BM25 arms' differed (M3k 0.734/0.737). The report was scoring the allocator as if it were the ranker. RecallResult now carries ranked_ids, set at recall()'s single return point so both packers and both the query-ranked and query-blind paths agree, and the arm returns it. No extra scan.",
+      "evidence": "python3 benchmarks/run_bench.py --tier all --skip-scale --seed 3: engine nDCG@10 rose (M11 0.690 -> 0.702, M8 0.641 -> 0.693) while hit rate, chars/hit, task success and LoCoMo are byte-identical; nDCG@10_packed now shows the allocator's own cost (M11 0.012, M8 0.052)"
+    },
+    {
+      "id": "NVIDIA",
+      "title": "A third model-judge provider and an NVIDIA embedding path",
+      "status": "integrated_offline_verified_only",
+      "result": "NvidiaJudge joins Gemini and OpenAI over the same transport (mode 'nvidia', env NVIDIA_CLOUD_KEY then NVIDIA_API_KEY, base https://integrate.api.nvidia.com/v1, default model nvidia/nemotron-3.5-lightning-30b-a3b, NVIDIA_BASE_URL and NVIDIA_MODEL overrides; the default was corrected by a live call after meta/llama-3.3-70b-instruct returned HTTP 410 end-of-life and catalogue-listed models returned HTTP 404 not-entitled-for-account). The 'llm' selection order is Gemini -> OpenAI -> NVIDIA and auto/oracle stay strictly offline, so a key in the environment still cannot turn the canonical run into a network run. M5 semantic/dense-embeddings can now reach NVIDIA NIM embeddings (NVIDIA_EMBED_MODEL default nvidia/nemotron-3-embed-1b (2048 dims, verified live), with the input_type field the endpoint requires, 'passage' for stored memories and 'query' for the query).",
+      "evidence": "python3 benchmarks/test_llm_judge.py -> 'llm judge ok: 71 assertions'; python3 benchmarks/judge.py -> 'judge ok'; 'run_bench.py --judge nvidia' with the key unset exits 2 with a clear message rather than a traceback. No live call was made from this host and no key value is read, logged or committed."
     },
     {
       "id": "SIG",
@@ -504,7 +586,7 @@
       "claim": "The LLM judge protocol works without an API key",
       "evidence": "python3 benchmarks/test_llm_judge.py -> 'llm judge ok: 22 assertions' covering request shape, JSON parsing, caching, HTTP-500 error handling and judge selection",
       "tool": "run_terminal_command",
-      "note": "Pre-round-4 revision. The same suite is now 60 assertions and also covers the Gemini provider, the pacing, the backoff and the call budget without a key. See the live-verification entry below."
+      "note": "Pre-round-4 revision. The same suite is now 71 assertions and also covers the Gemini and NVIDIA providers, the pacing, the backoff and the call budget without a key. See the live-verification entry below."
     },
     {
       "claim": "No LLM API key is available, so real LLM-judged numbers cannot be produced here",
@@ -574,7 +656,7 @@
       "claim": "Every offline check passes today, and the engine suite is green with four registered defects",
       "evidence": "stats, engines, judge, stub_llm, synthetic, test_llm_judge, test_engine all exit 0; py_compile clean. test_engine prints 'engine ok: 69 checks' plus KNOWN DEFECT W0.1, W0.7, D13, D14.",
       "tool": "run_terminal_command (the full offline battery)",
-      "note": "Pre-round-4 revision: 69 checks with four registry entries. The same battery now reports 139 checks and no registry entries."
+      "note": "Pre-round-4 revision: 69 checks with four registry entries. The same battery now reports 170 checks and no registry entries."
     },
     {
       "claim": "A scoped benchmark run overwrites the committed report with a partial one",
@@ -648,8 +730,28 @@
     },
     {
       "claim": "No harness-level LLM-judged table exists yet",
-      "evidence": "the free-tier quota was exhausted during verification: every subsequent call returned HTTP 429 'Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests'. The judge protocol is verified live and against the local stub (60 assertions); the judged numbers are not.",
+      "evidence": "the free-tier quota was exhausted during verification: every subsequent call returned HTTP 429 'Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests'. The judge protocol is verified live and against the local stub (60 assertions, 71 after round 5); the judged numbers are not.",
       "tool": "python3 via run_terminal_command"
+    },
+    {
+      "claim": "The hand-set PRIOR_WEIGHT is a cost to ranking, confirmed out-of-sample",
+      "evidence": "python3 benchmarks/tune_probe.py (after repairing its unpacking crash), seed 0, all four tiers: the committed 0.35 row reproduces the committed M8 line and the LoCoMo column falls monotonically with the weight - 0.683 at 0.0, 0.567 at 0.1, 0.517 at 0.2, 0.433 at 0.35, 0.433 at 0.5, 0.317 at 1.0. Then the pre-registered hold-out run: arm M11 on seeds 3 and 4 passes all four F18 thresholds (hit 0.893/0.893, nDCG 0.702/0.697, chars/hit 1276/1283, task 0.539/0.539).",
+      "tool": "python3 benchmarks/tune_probe.py + python3 benchmarks/run_bench.py --tier all --skip-scale --seed 3 / --seed 4"
+    },
+    {
+      "claim": "The candidate caps are not the cause of the engine's ranking deficit",
+      "evidence": "arm M12 (M10 with max_candidates, max_postings_scan and recall_pool all unbounded) reproduces M10 exactly on both hold-out seeds - same hit rate 0.830, nDCG 0.677/0.672, chars/hit 1596/1597 and LoCoMo 0.433. The capped candidate path feeds duplicate detection, not query ranking, so the caps cannot bind on these tiers.",
+      "tool": "python3 benchmarks/run_bench.py --tier all --skip-scale --seed 3 / --seed 4"
+    },
+    {
+      "claim": "The report had been scoring the allocator as the ranker for every engine arm",
+      "evidence": "M11 and M8 reported identical nDCG@10 and nDCG@10_packed columns (0.690/0.690 and 0.641/0.641) while M3k's differed (0.734/0.737) - impossible when an allocator reorders context. Cause: MyelinatedArm._recall returned no pre-packing order, so the harness fell back to the packed order. After RecallResult.ranked_ids shipped, nDCG@10 rose for every engine arm with every other metric byte-identical.",
+      "tool": "python3 benchmarks/run_bench.py --tier all --skip-scale --seed 3, before and after the change"
+    },
+    {
+      "claim": "The engine now matches the best non-engine arm on hit rate and beats it on context cost",
+      "evidence": "M11 at 0.893 hit rate against M3k's 0.893, 1276/1283 characters per evidence hit against 1294/1301, task success 0.539 against 0.539, supersession leak 0.000 against 0.000; trailing on nDCG (0.702/0.697 against 0.734/0.731) and LoCoMo (0.683 against 0.717), on 206 queries, two hold-out seeds, offline oracle judge.",
+      "tool": "python3 benchmarks/run_bench.py --tier all --skip-scale --seed 3 / --seed 4"
     }
   ],
   "artifacts": [
@@ -674,6 +776,7 @@
     "docs/TESTING.md",
     "docs/FIX-PLAN.md",
     "docs/ROUND4-DESIGN.md",
+    "docs/ROUND5-STRATEGY.md",
     "docs/HOW-IT-WORKS.md",
     "docs/assets/hero.svg",
     ".github/workflows/checks.yml",

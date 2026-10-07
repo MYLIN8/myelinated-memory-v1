@@ -299,6 +299,22 @@ is the **packer** specifically — a stronger and more useful claim than "the ra
 demoted to a tie-breaker and criterion 3 passes with margin instead of by 0.049. And **M12** is the
 only arm that can move criterion 5 at all, via Rule 2's update class.
 
+**Round-5 outcome — both arms this design left open now exist, though one of them landed differently.**
+**M11** was built as designed and **passed** the frozen criterion on both hold-out seeds (hit rate
+0.893, nDCG@10 0.702/0.697, chars/hit 1276/1283, task success 0.539), so `PRIOR_WEIGHT` now ships at
+**0.0** and the prior is a tie-breaker — this arm is the round's whole result. **M12** was *not*
+built as "engine cosine with the unified mechanism": that mechanism shipped in round 4 as a labelled
+protocol change inside the existing arms, so the letter of the design was not followed. M12 was
+instead repurposed as the **candidate-cap control** (`M10` with `max_candidates`,
+`max_postings_scan` and `recall_pool` unbounded), which reproduces `M10` exactly on both seeds and
+so rules candidate generation out as the cause of the ranking deficit. Criterion 5 was not moved by
+either arm: `M11`'s `leak_decay_only` is still 1.000, and the arm that was supposed to test the
+decay claim no longer exists in the form this design specified. One further correction came out of
+the same work: the engine arm had never handed the harness a pre-packing rank order, so every engine
+arm's `nDCG@10` and `nDCG@10 packed` columns were identical and the report had been scoring the
+allocator as the ranker (D8/F21, fixed). See
+[`ROUND5-STRATEGY.md`](ROUND5-STRATEGY.md).
+
 ## 5. Sequencing
 
 ```

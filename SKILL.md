@@ -1,7 +1,7 @@
 ---
 name: myelinated-memory
 description: "Use when managing a limited context budget across stored memories: tiered recall, session-boundary consolidation, supersession."
-version: 4.0.0
+version: 5.0.0
 author: Hermes Agent
 tags: [memory, myelination, recall, prioritization, context-budget]
 ---
@@ -72,10 +72,19 @@ Read these before relying on this skill. Each is tracked with a fix in
   the first time in this project that decay alone demoted a stale fact — a lead on a three-scenario
   suite, not a proven capability. Retire what you know has been replaced.
 - **The budget win belongs to the allocator, not the store.** A BM25 arm that borrows only the
-  engine's packer leads the whole suite (hit rate 0.893 against the best engine arm's 0.835, at
-  1296 characters per evidence hit against 1572). The strength, decay and tier machinery has not
-  been shown to earn its cost — see the allocator controls in
-  [benchmarks/RESULTS.md](benchmarks/RESULTS.md).
-- **Ranking is fine, not best.** A plain BM25 baseline orders evidence better (nDCG@10 0.732
-  against 0.639 for the best engine arm). The measured win over *flat* memory is budget
-  allocation: 1572 characters per evidence hit against a flat store's 1734.
+  engine's packer leads on hit rate (0.893). As of round 5 the shipped engine ties it there
+  (0.893, at 1276 characters per evidence hit against the control's 1294) but still loses to it
+  on the public LoCoMo tier (0.683 against 0.717) and on nDCG. The packer is therefore the
+  demonstrated contributor, not the strength, decay and tier machinery — see the allocator
+  controls in [benchmarks/RESULTS.md](benchmarks/RESULTS.md) and
+  [docs/ROUND5-STRATEGY.md](docs/ROUND5-STRATEGY.md).
+- **Ranking is fine, not best.** A plain BM25 baseline orders evidence better (nDCG@10 0.734
+  against 0.702 for the shipped engine and 0.639 for round 4's configuration). The measured win
+  over *flat* memory is budget allocation: 1276 characters per evidence hit against a flat
+  store's 1734.
+- **Round 5 changed one shipped default.** `PRIOR_WEIGHT` — how much retrieval strength competes
+  with query similarity for the ranking — is now **0.0** rather than 0.35, because measured on the
+  public LoCoMo tier the strength term cost hit rate at every point above zero (0.683 at 0.0
+  against 0.433 at 0.35). Strength still decides detail tiers and budget allocation; it no longer
+  decides the order. If you were relying on a strongly-accessed memory outranking a better lexical
+  match, it no longer will.

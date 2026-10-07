@@ -18,6 +18,13 @@ Arms:
     M9  = M8 + supersession  R5, honour retire/supersede signals
     M10 = M9 + reinforcement R2, learn from memories used in correct answers
 
+Ranking attribution controls (round 5). Both are M10 with exactly one thing
+changed, so the ranking loss against the BM25 arms can be attributed rather
+than guessed at:
+
+    M11 = M10 - prior weight   ordering is pure lexical similarity
+    M12 = M10, caps lifted     candidate generation is unbounded (0 = unbounded)
+
 Allocator attribution controls (round 4, `docs/ROUND4-DESIGN.md` 4). All three
 reuse the BM25 ranking, so the ranking policy is identical and the ONLY thing
 that differs is how text is allocated into the budget - which is what decides
@@ -72,6 +79,7 @@ if _SCRIPTS_DIR not in sys.path:
 from myelinate import (  # noqa: E402  (path set up above)
     DETAIL_VALUE,
     GIST_MAX_CHARS,
+    LEGACY_PRIOR_WEIGHT,
     SUMMARY_MAX_CHARS,
     TIER_DETAILS,
     MyelinatedMemory,
@@ -567,35 +575,59 @@ class TfidfArm(TimedArm):
 
 
 class DenseEmbeddingArm(TfidfArm):
-    """Dense semantic memory backed by an OpenAI-compatible embeddings endpoint."""
+    """Dense semantic memory backed by an OpenAI-compatible embeddings endpoint.
+
+    Two request styles are supported. ``"openai"`` posts ``{model, input}``.
+    ``"nvidia"`` (NVIDIA NIM) additionally posts ``input_type``, which that
+    endpoint requires and rejects requests without: ``"passage"`` for a stored
+    memory, ``"query"`` for the recall query.
+    """
 
     name = "M5 semantic/dense-embeddings"
     uses_network = True
 
-    def __init__(self, api_key: str, base_url: str, model: str, timeout: float = 60.0) -> None:
+    def __init__(self, api_key: str, base_url: str, model: str, timeout: float = 60.0,
+                 embed_style: str = "openai") -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        self.embed_style = embed_style
         self.embeddings: Dict[str, List[float]] = {}
         super().__init__()
 
     @classmethod
     def from_env(cls) -> Optional["DenseEmbeddingArm"]:
         key = os.environ.get("OPENAI_API_KEY")
+        if key:
+            return cls(
+                api_key=key,
+                base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+                model=os.environ.get("OPENAI_EMBED_MODEL", "text-embedding-3-small"),
+            )
+        key = os.environ.get("NVIDIA_CLOUD_KEY")
         if not key:
             return None
         return cls(
             api_key=key,
-            base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-            model=os.environ.get("OPENAI_EMBED_MODEL", "text-embedding-3-small"),
+            base_url=os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"),
+            # Verified live: `nvidia/embed-qa-4` and `nvidia/llama-3.2-nv-embedqa-1b-v1`
+            # both answer HTTP 404 "Function not found for account" on this key,
+            # while the one below returns 2048-dimension vectors.
+            model=os.environ.get("NVIDIA_EMBED_MODEL", "nvidia/nemotron-3-embed-1b"),
+            embed_style="nvidia",
         )
 
-    def _embed(self, texts: Sequence[str]) -> List[List[float]]:
-        payload = json.dumps({"model": self.model, "input": list(texts)}).encode("utf-8")
+    def _embed(self, texts: Sequence[str], input_type: str = "passage") -> List[List[float]]:
+        payload: Dict[str, object] = {"model": self.model, "input": list(texts)}
+        if self.embed_style == "nvidia":
+            # NVIDIA's embed endpoint rejects a request without ``input_type``.
+            payload["input_type"] = input_type
         request = urllib.request.Request(
             self.base_url + "/embeddings",
-            data=payload,
+            # urllib needs bytes here; passing the dict itself raised
+            # "TypeError: can't concat str to bytes" on every call.
+            data=json.dumps(payload).encode("utf-8"),
             headers={"Authorization": "Bearer %s" % self.api_key,
                      "Content-Type": "application/json"},
             method="POST",
@@ -611,7 +643,7 @@ class DenseEmbeddingArm(TfidfArm):
     def _add(self, content, *, memory_id=None, category="general", protected=False, now=0.0) -> str:
         mem_id = super()._add(content, memory_id=memory_id, category=category,
                               protected=protected, now=now)
-        self.embeddings[mem_id] = self._embed([content])[0]
+        self.embeddings[mem_id] = self._embed([content], input_type="passage")[0]
         return mem_id
 
     def _retire(self, memory_id, now=0.0) -> None:
@@ -621,7 +653,7 @@ class DenseEmbeddingArm(TfidfArm):
     def _recall(self, query, budget, now):
         if not self.docs:
             return "", []
-        q_vec = self._embed([query])[0]
+        q_vec = self._embed([query], input_type="query")[0]
         q_norm = math.sqrt(sum(v * v for v in q_vec)) or 1.0
         scored = []
         for mem_id, doc in self.docs.items():
@@ -637,21 +669,35 @@ class DenseEmbeddingArm(TfidfArm):
         return text, used
 
 
-# ------------------------------------------------------------ M6 - M10
+# ------------------------------------------------------------ M6 - M12
 class MyelinatedArm(TimedArm):
     """The engine from scripts/myelinate.py, in memory-only mode.
 
     ``similarity``, ``knapsack``, ``stale_retirement`` and ``reinforcement`` are
     independent switches so the report can attribute any gain to one change.
+
+    ``prior_weight`` and the three candidate caps additionally override the
+    engine's retrieval SHAPE (round 5): the first says how much stored strength
+    is allowed to outrank lexical similarity, the other three say how large a
+    candidate set the ordering formula is even offered. ``None`` means "the
+    engine's own module constant"; ``0`` means unbounded.
     """
 
     def __init__(self, name: str, similarity: bool = True, knapsack: bool = True,
-                 stale_retirement: bool = False, reinforcement: bool = False) -> None:
+                 stale_retirement: bool = False, reinforcement: bool = False,
+                 prior_weight: Optional[float] = None,
+                 max_candidates: Optional[int] = None,
+                 max_postings_scan: Optional[int] = None,
+                 recall_pool: Optional[int] = None) -> None:
         self.arm_name = name
         self.use_similarity = similarity
         self.use_knapsack = knapsack
         self.stale_retirement = stale_retirement
         self.reinforcement = reinforcement
+        self.prior_weight = prior_weight
+        self.max_candidates = max_candidates
+        self.max_postings_scan = max_postings_scan
+        self.recall_pool = recall_pool
         self.supports_retirement = stale_retirement
         self.supports_reinforcement = reinforcement
         super().__init__()
@@ -666,6 +712,10 @@ class MyelinatedArm(TimedArm):
             similarity=self.use_similarity,
             knapsack=self.use_knapsack,
             stale_retirement=self.stale_retirement,
+            prior_weight=self.prior_weight,
+            max_candidates=self.max_candidates,
+            max_postings_scan=self.max_postings_scan,
+            recall_pool=self.recall_pool,
         )
 
     def _add(self, content, *, memory_id=None, category="general", protected=False, now=0.0) -> str:
@@ -688,7 +738,11 @@ class MyelinatedArm(TimedArm):
 
     def _recall(self, query, budget, now):
         result = self.engine.recall(budget=budget, now=now, query=query)
-        return result.text, result.used_ids
+        # Hand the harness the engine's own pre-packing order, so nDCG@10 scores
+        # the ranker and nDCG@10_packed scores the allocator. Returning only
+        # ``used_ids`` silently scored the packer as if it were the ranker (D8/
+        # F21), which is why every engine arm's two nDCG columns were identical.
+        return result.text, result.used_ids, result.ranked_ids or result.used_ids
 
     def size(self) -> int:
         return self.engine.size()
@@ -711,14 +765,34 @@ def build_arms(include_network: bool = False) -> List[Arm]:
         dense = DenseEmbeddingArm.from_env()
         if dense is not None:
             arms.append(dense)
+    # M6-M10 are the round-4 engine and M12 is its candidate-cap control: all of
+    # them pin `prior_weight=LEGACY_PRIOR_WEIGHT` so the published round-4 rows
+    # stay reproducible after round 5 lowered the engine default. Without the pin
+    # every one of these arms would silently become M11 and the before/after
+    # comparison would vanish from the report.
     arms.extend([
-        MyelinatedArm("M6 myelinated (pure)", similarity=False, knapsack=False),
-        MyelinatedArm("M7 myelinated +similarity", similarity=True, knapsack=False),
-        MyelinatedArm("M8 myelinated +knapsack", similarity=True, knapsack=True),
+        MyelinatedArm("M6 myelinated (pure)", similarity=False, knapsack=False,
+                      prior_weight=LEGACY_PRIOR_WEIGHT),
+        MyelinatedArm("M7 myelinated +similarity", similarity=True, knapsack=False,
+                      prior_weight=LEGACY_PRIOR_WEIGHT),
+        MyelinatedArm("M8 myelinated +knapsack", similarity=True, knapsack=True,
+                      prior_weight=LEGACY_PRIOR_WEIGHT),
         MyelinatedArm("M9 myelinated +supersession", similarity=True, knapsack=True,
-                      stale_retirement=True),
+                      stale_retirement=True, prior_weight=LEGACY_PRIOR_WEIGHT),
         MyelinatedArm("M10 myelinated +reinforcement", similarity=True, knapsack=True,
+                      stale_retirement=True, reinforcement=True,
+                      prior_weight=LEGACY_PRIOR_WEIGHT),
+        # Round-5 ranking controls. Both are M10 with exactly one change, so a
+        # ranking loss can be attributed to the ordering formula or to the size
+        # of the candidate set it is handed - never to "the engine".
+        # M11 leaves `prior_weight` at None, so it tracks the shipped engine
+        # default (0.0) instead of hardcoding the measured value twice.
+        MyelinatedArm("M11 myelinated +lexical ranking", similarity=True, knapsack=True,
                       stale_retirement=True, reinforcement=True),
+        MyelinatedArm("M12 myelinated +unbounded candidates", similarity=True, knapsack=True,
+                      stale_retirement=True, reinforcement=True,
+                      prior_weight=LEGACY_PRIOR_WEIGHT,
+                      max_candidates=0, max_postings_scan=0, recall_pool=0),
     ])
     return arms
 
@@ -738,6 +812,8 @@ ARM_ORDER = [
     "M8 myelinated +knapsack",
     "M9 myelinated +supersession",
     "M10 myelinated +reinforcement",
+    "M11 myelinated +lexical ranking",
+    "M12 myelinated +unbounded candidates",
 ]
 
 
@@ -748,6 +824,12 @@ def arm_names() -> List[str]:
 if __name__ == "__main__":
     arms = build_arms()
     print("arms:", ", ".join(a.name for a in arms))
-    assert len(arms) == 13, "expected 13 offline arms, got %d" % len(arms)
+    # ARM_ORDER also names the opt-in network arm, which build_arms() omits, so
+    # the expectation is derived rather than hardcoded: a literal count is how
+    # this drifted out of sync before.
+    offline = [name for name in ARM_ORDER if name != DenseEmbeddingArm.name]
+    assert [a.name for a in arms] == offline, (
+        "build_arms() and ARM_ORDER disagree: %r vs %r"
+        % ([a.name for a in arms], offline))
     assert all(hasattr(a, "recall_ms") for a in arms)
     print("engines ok")

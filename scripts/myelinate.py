@@ -114,9 +114,24 @@ RECALL_POOL = 600
 # ---- knapsack packing weights (R4/R7) -------------------------------------
 # ASSUMPTION: how much of a memory's usefulness survives at each detail level.
 DETAIL_VALUE: Dict[str, float] = {"full": 1.0, "summary": 0.55, "gist": 0.25}
-# ASSUMPTION: how much retrieval strength contributes to a memory's value for
-# the current question, relative to query similarity.
-PRIOR_WEIGHT = 0.35
+# MEASURED (round 5) - how much retrieval strength contributes to a memory's
+# value for the current question, relative to query similarity.
+#
+# This term adds a *query-independent* constant to a cosine score in [0, 1], so a
+# strong but irrelevant memory could outrank a relevant one. The round-5 re-run of
+# `benchmarks/tune_probe.py` (the instrument that had been crashing, D-sweep) on
+# the report's own workload, then confirmed on hold-out seeds 3-4 on 206 queries,
+# measured the committed 0.35 as the single largest cost to ranking: arm M11
+# (M10 with this weight at 0.0) gained +0.058 hit rate (0.835 -> 0.893, level with
+# the best non-engine arm), +0.049 nDCG@10, -296 characters per hit and +0.250 on
+# the LoCoMo tier (0.433 -> 0.683) at identical supersession behaviour. That passes
+# the criterion frozen in docs/FIX-PLAN.md F18 on both hold-out seeds.
+#
+# The prior still governs budget allocation and tie-breaks (see _utility); it no
+# longer decides the order. LEGACY_PRIOR_WEIGHT keeps the pre-round-5 arms
+# (M6-M10, M12) reproducible as the before/after control.
+PRIOR_WEIGHT = 0.0
+LEGACY_PRIOR_WEIGHT = 0.35
 # Pinned memories are safety-critical or identity-fixed: they must not be
 # crowded out by relevance, so they carry an effectively infinite prior.
 PROTECTED_PRIOR = 1e6
@@ -255,6 +270,11 @@ class Memory:
 class RecallResult:
     text: str
     used_ids: List[str] = field(default_factory=list)
+    # The pre-packing rank order the packer was handed. Without it the harness has
+    # nothing to score the *ranker* with, so it falls back to ``used_ids`` and
+    # scores the allocator's order instead (defect D8/F21). Ranking quality and
+    # allocation quality are then indistinguishable in the report.
+    ranked_ids: List[str] = field(default_factory=list)
     tiers: Dict[str, int] = field(default_factory=dict)
     chars: int = 0
     budget: int = DEFAULT_BUDGET
@@ -275,6 +295,11 @@ class MyelinatedMemory:
         knapsack: bool = True,
         stale_retirement: bool = True,
         auto_supersede: bool = True,
+        *,
+        prior_weight: Optional[float] = None,
+        max_candidates: Optional[int] = None,
+        max_postings_scan: Optional[int] = None,
+        recall_pool: Optional[int] = None,
     ):
         # ``in_memory=True`` keeps the engine entirely in RAM and never reads or
         # writes the user store. The benchmark harness embeds it this way.
@@ -288,6 +313,18 @@ class MyelinatedMemory:
         # wording is retired, instead of the new text being silently absorbed. Its own
         # switch so a future ablation arm can attribute it (BM-002).
         self.auto_supersede = auto_supersede
+
+        # Recall parameters, resolvable per instance. These were module constants,
+        # so attributing a ranking change to the constant it varies meant editing
+        # the engine between sweeps - which makes a sweep easy to contaminate with
+        # an edit nobody recorded. Each defaults to the module constant; for the
+        # three ceilings, 0 means *unbounded* (no cap), so a probe can lift a
+        # ceiling without inventing a sentinel of its own. Default behaviour is
+        # unchanged: passing nothing resolves to exactly the old constants.
+        self.prior_weight = PRIOR_WEIGHT if prior_weight is None else prior_weight
+        self.max_candidates = MAX_CANDIDATES if max_candidates is None else max_candidates
+        self.max_postings_scan = MAX_POSTINGS_SCAN if max_postings_scan is None else max_postings_scan
+        self.recall_pool = RECALL_POOL if recall_pool is None else recall_pool
 
         self.memories: Dict[str, Memory] = {}
         # Content never changes after creation, so these are cached by id.
@@ -393,7 +430,7 @@ class MyelinatedMemory:
                     del self._sk[key]
         self._sim_dirty = True
 
-    def _candidates(self, sketch: Tuple[int, ...], limit: int = MAX_CANDIDATES) -> List[str]:
+    def _candidates(self, sketch: Tuple[int, ...], limit: Optional[int] = None) -> List[str]:
         """Most likely near-duplicates, ranked by how many sketch keys they share.
 
         Keys are read rarest-first and the scan stops at ``MAX_POSTINGS_SCAN``
@@ -402,7 +439,14 @@ class MyelinatedMemory:
         insertion order: with a small vocabulary many memories collide on a few
         keys, and taking the first N seen discarded the real match about a third
         of the time.
+
+        ``limit`` defaults to the instance's ``max_candidates``. Either way 0
+        means unbounded: no postings ceiling and no candidate ceiling is applied,
+        which is the configuration a probe uses to ask whether a capped candidate
+        set is what cost it the match.
         """
+        cap = self.max_candidates if limit is None else limit
+        scan_cap = self.max_postings_scan
         shared: Dict[str, int] = {}
         scanned = 0
         for key in sorted(self._bands(sketch), key=lambda k: len(self._sk.get(k, ()))):
@@ -412,12 +456,12 @@ class MyelinatedMemory:
             for candidate in ids:
                 shared[candidate] = shared.get(candidate, 0) + 1
                 scanned += 1
-            if scanned >= MAX_POSTINGS_SCAN:
+            if scan_cap and scanned >= scan_cap:
                 break
-        if len(shared) <= limit:
-            return list(shared)
-        ranked = sorted(shared.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
-        return [candidate for candidate, _ in ranked]
+        ranked = sorted(shared.items(), key=lambda kv: (-kv[1], kv[0]))
+        if cap == 0 or len(ranked) <= cap:
+            return [candidate for candidate, _ in ranked]
+        return [candidate for candidate, _ in ranked[:cap]]
 
     def _find_duplicate(self, content: str) -> Optional[Memory]:
         """The *live* memory this content restates, if any.
@@ -799,7 +843,7 @@ class MyelinatedMemory:
                  current: Optional[Dict[str, float]] = None) -> float:
         score = current[mem.id] if current else self.strength(mem, now)
         sim = sims.get(mem.id, 0.0) if sims else 0.0
-        value = sim + PRIOR_WEIGHT * score
+        value = sim + self.prior_weight * score
         if mem.protected:
             value += PROTECTED_PRIOR
         return value
@@ -872,6 +916,58 @@ class MyelinatedMemory:
                             chars=spent, budget=budget, similarity_used=sims is not None,
                             knapsack_used=True)
 
+    def _ordered_candidates(self, query: Optional[str], now: float,
+                            want_similarity: bool) -> Tuple[List[Memory],
+                                                            Optional[Dict[str, float]],
+                                                            Dict[str, float]]:
+        """The pool the packer is given: live memories, query-ranked, then capped.
+
+        One funnel for both ``recall()`` and ``candidate_pool()``, so the pool a
+        probe measures is the pool recall actually used and the two can never
+        drift apart - the D9 lesson (one ``_touch`` funnel) applied to the ranker.
+        """
+        live = [m for m in self.memories.values() if not m.retired]
+        # Strength is a pure function of (score, score_at, category, now), so a query
+        # ranks and packs the current value instead of whatever the last refresh left
+        # behind (D1). Computed once per candidate and reused by both packers.
+        current = {m.id: self.strength(m, now) for m in live}
+
+        sims: Optional[Dict[str, float]] = None
+        if query and want_similarity:
+            sims = self.similarity_scores(query)
+
+        if sims is not None:
+            live.sort(key=lambda m: (
+                not m.protected,
+                -(sims.get(m.id, 0.0) + self.prior_weight * current[m.id]),
+                -current[m.id],
+                m.id,
+            ))
+        else:
+            live.sort(key=lambda m: (not m.protected, -current[m.id], -m.last_access,
+                                     -m.created, m.id))
+        # ``recall_pool`` of 0 is unbounded: rank the whole live store.
+        pool = live if not self.recall_pool else live[:self.recall_pool]
+        return pool, sims, current
+
+    def candidate_pool(self, query: str, now: Optional[float] = None) -> List[str]:
+        """Read-only: the ids recall would rank for ``query``, before packing.
+
+        This is the pool *after* candidate generation and the ``recall_pool`` cut
+        but *before* scoring, packing or the character budget: the set the ranker
+        is handed. It exists so a probe can separate "the engine never considered
+        the right memory" (a candidate-generation ceiling) from "it considered it
+        and ranked or packed it too low" (a ranking or allocation loss) - two
+        failures that the recall metrics alone cannot tell apart.
+
+        It mutates nothing: no score, no tier, no index, no counters. The only
+        thing it can do is rebuild the lazily-cached TF-IDF state, which
+        ``similarity_scores`` would rebuild on the next query anyway.
+        """
+        now = self.clock() if now is None else now
+        pool, _sims, _current = self._ordered_candidates(query, now, self.similarity)
+        return [m.id for m in pool]
+
     def recall(self, budget: int = DEFAULT_BUDGET, now: Optional[float] = None,
                query: Optional[str] = None, use_similarity: Optional[bool] = None) -> RecallResult:
         """Context injection, filled to the character budget.
@@ -883,33 +979,15 @@ class MyelinatedMemory:
         now = self.clock() if now is None else now
         live = [m for m in self.memories.values() if not m.retired]
         excluded = len(self.memories) - len(live)
-        # Strength is a pure function of (score, score_at, category, now), so a query
-        # ranks and packs the current value instead of whatever the last refresh left
-        # behind (D1). Computed once per candidate and reused by both packers.
-        current = {m.id: self.strength(m, now) for m in live}
-
         want_similarity = self.similarity if use_similarity is None else use_similarity
-        sims: Optional[Dict[str, float]] = None
-        if query and want_similarity:
-            sims = self.similarity_scores(query)
-
-        if sims is not None:
-            live.sort(key=lambda m: (
-                not m.protected,
-                -(sims.get(m.id, 0.0) + PRIOR_WEIGHT * current[m.id]),
-                -current[m.id],
-                m.id,
-            ))
-            pool = live[:RECALL_POOL]
-            result = (self._recall_knapsack(pool, sims, budget, now, current) if self.knapsack
-                      else self._recall_tiered(pool, sims, budget, now, current))
-        else:
-            live.sort(key=lambda m: (not m.protected, -current[m.id], -m.last_access,
-                                     -m.created, m.id))
-            pool = live[:RECALL_POOL]
-            result = (self._recall_knapsack(pool, None, budget, now, current) if self.knapsack
-                      else self._recall_tiered(pool, None, budget, now, current))
+        pool, sims, current = self._ordered_candidates(query, now, want_similarity)
+        result = (self._recall_knapsack(pool, sims, budget, now, current) if self.knapsack
+                  else self._recall_tiered(pool, sims, budget, now, current))
         result.retired_excluded = excluded
+        # Recorded at the one return point, so both packers and both the
+        # query-ranked and query-blind paths report the same order. No extra scan:
+        # this is the pool the packer was already handed.
+        result.ranked_ids = [m.id for m in pool]
         return result
 
     # ------------------------------------------------------------ persistence

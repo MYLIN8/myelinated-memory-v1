@@ -37,7 +37,7 @@ import math
 import os
 import sys
 import tempfile
-from typing import List
+from typing import List, Optional
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -51,7 +51,12 @@ from myelinate import (  # noqa: E402
     DUPLICATE_JACCARD,
     GIST_MAX_CHARS,
     INITIAL_SCORE,
+    MAX_CANDIDATES,
+    MAX_POSTINGS_SCAN,
+    LEGACY_PRIOR_WEIGHT,
+    PRIOR_WEIGHT,
     PROTECTED_SCORE,
+    RECALL_POOL,
     SUMMARY_MAX_CHARS,
     MyelinatedMemory,
     _tokens,
@@ -348,6 +353,133 @@ def test_pin_refuses_a_retired_memory() -> None:
     ok(memory.retired and not memory.protected, "and must leave it retired and unprotected")
 
 
+# ------------------------------------------------------ recall parameters
+# These four were module constants until round 5, resolved per instance so a
+# sweep can vary one without editing the engine between runs. The default
+# resolution is the compatibility contract: anything that resolves differently
+# silently re-measures every published number.
+def test_recall_parameters_default_to_the_module_constants() -> None:
+    engine = _engine()
+    ok(engine.prior_weight == PRIOR_WEIGHT, "prior_weight defaults to the module constant")
+    ok(engine.max_candidates == MAX_CANDIDATES,
+       "max_candidates defaults to the module constant")
+    ok(engine.max_postings_scan == MAX_POSTINGS_SCAN,
+       "max_postings_scan defaults to the module constant")
+    ok(engine.recall_pool == RECALL_POOL, "recall_pool defaults to the module constant")
+
+    overridden = _engine(prior_weight=0.0, max_candidates=0, recall_pool=7)
+    ok(overridden.prior_weight == 0.0, "an explicit prior_weight override is kept")
+    ok(overridden.max_candidates == 0, "an explicit max_candidates override is kept")
+    ok(overridden.recall_pool == 7, "an explicit recall_pool override is kept")
+    ok(overridden.max_postings_scan == MAX_POSTINGS_SCAN,
+       "an override must not disturb the parameters it does not name")
+
+
+def test_zero_means_unbounded_for_the_candidate_ceilings() -> None:
+    """``0`` lifts a ceiling; it must not ask for an empty result.
+
+    Candidate generation is capped twice (candidates kept, postings scanned),
+    and a capped candidate set is a hard ceiling on what recall can reach. The
+    probe needs a way to remove that ceiling that is not a magic large number.
+    """
+    def build(**kwargs) -> MyelinatedMemory:
+        engine = _engine(**kwargs)
+        for index in range(80):
+            engine.add("Zephyrino retention window %d about kestrel%03d policy."
+                       % (index, index), now=T0)
+        return engine
+
+    probe = "Zephyrino retention window about kestrel policy"
+    capped = build()
+    unbounded = build(max_candidates=0, max_postings_scan=0)
+    capped_ids = capped._candidates(capped._sketch_for(probe))
+    unbounded_ids = unbounded._candidates(unbounded._sketch_for(probe))
+    ok(len(capped_ids) <= MAX_CANDIDATES, "the default candidate ceiling still holds")
+    ok(len(unbounded_ids) > MAX_CANDIDATES,
+       "max_candidates=0 must lift the %d-candidate ceiling" % MAX_CANDIDATES)
+    ok(len(unbounded_ids) > len(capped_ids),
+       "lifting the ceiling must reach more of that store")
+    ok(len(set(unbounded_ids)) == len(unbounded_ids),
+       "the candidate list must not repeat an id")
+
+
+def test_recall_pool_caps_the_pool_recall_packs_from() -> None:
+    """The pool is the ranker's whole input: nothing outside it can be recalled."""
+    def build(**kwargs) -> MyelinatedMemory:
+        engine = _engine(**kwargs)
+        for index in range(6):
+            engine.add("Retention window %d for audit logs and access policy." % index, now=T0)
+        return engine
+
+    query = "retention window audit logs access policy"
+    capped = build(recall_pool=3)
+    ok(len(capped.candidate_pool(query, now=T0)) == 3,
+       "recall_pool caps the pool the ranker sees")
+    ok(len(capped.recall(budget=2200, now=T0, query=query).used_ids) <= 3,
+       "recall cannot pack a memory the pool excluded")
+    unbounded = build(recall_pool=0)
+    ok(len(unbounded.candidate_pool(query, now=T0)) == 6,
+       "recall_pool=0 means unbounded: the whole live store is ranked")
+
+
+def test_prior_weight_moves_the_ranking_toward_similarity() -> None:
+    """The prior term is a real ranking knob, not decoration.
+
+    The fixture is the central question of round 5 in miniature: a memory that is
+    strongly myelinated but says nothing about the question, against a memory
+    that answers it and was never used. At prior_weight 0 the lexical match must
+    rank first; at a large weight the engine must visibly prefer the strong,
+    irrelevant one.
+    """
+    lexical = "The cache layer runs Redis 6 in the staging cluster."
+    strong = "Lunch is served at noon in the second floor kitchen today."
+    query = "cache layer redis staging cluster"
+
+    def engine_with(weight: Optional[float]) -> MyelinatedMemory:
+        engine = _engine(prior_weight=weight)
+        engine.add(lexical, now=T0)
+        strong_id = engine.add(strong, now=T0)
+        for _ in range(12):
+            engine.access(strong_id, now=T0)
+        return engine
+
+    lexical_first = engine_with(0.0)
+    lexical_id = [mem_id for mem_id, mem in lexical_first.memories.items()
+                  if mem.content == lexical][0]
+    strong_id = [mem_id for mem_id, mem in lexical_first.memories.items()
+                 if mem.content == strong][0]
+    ok(lexical_first.candidate_pool(query, now=T0)[0] == lexical_id,
+       "at prior_weight 0 the lexical match must rank first")
+    # Scaled from the ROUND-4 commit, not from the live default. Round 5 lowered
+    # the default to 0.0 (the measured value), so `PRIOR_WEIGHT * 17` is 0.0 and
+    # this check would silently stop testing the large-weight branch at all.
+    prior_first = engine_with(LEGACY_PRIOR_WEIGHT * 17)
+    ok(prior_first.candidate_pool(query, now=T0)[0] == strong_id,
+       "a large prior_weight must promote the strong but irrelevant memory")
+    ok(prior_first.candidate_pool(query, now=T0)[0]
+       != lexical_first.candidate_pool(query, now=T0)[0],
+       "the prior weight must be able to reorder the ranking at all")
+
+
+def test_candidate_pool_is_read_only() -> None:
+    """A probe reads the pool; it must not perturb what it is measuring."""
+    engine = _engine()
+    engine.add("The cache layer runs Redis 6 in the staging cluster.", now=T0)
+    engine.add("Lunch is served at noon in the second floor kitchen today.", now=T0)
+    before = {mem_id: (mem.score, mem.score_at, mem.retired, mem.tier)
+              for mem_id, mem in engine.memories.items()}
+    first = engine.candidate_pool("cache layer redis", now=T0)
+    second = engine.candidate_pool("cache layer redis", now=T0)
+    ok(first == second, "candidate_pool must be deterministic")
+    ok(len(first) == 2, "every live memory is in the pool")
+    ok(engine.size() == 2, "candidate_pool must not change the store size")
+    ok({mem_id: (mem.score, mem.score_at, mem.retired, mem.tier)
+        for mem_id, mem in engine.memories.items()} == before,
+       "candidate_pool must not mutate a stored score, timestamp or tier")
+    ok(_engine().candidate_pool("anything", now=T0) == [],
+       "an empty store has an empty pool")
+
+
 # -------------------------------------------------------------- persistence
 def test_prune_reports_the_deficit() -> None:
     """D18: a ceiling the store cannot reach must be reported, not silently missed."""
@@ -404,6 +536,29 @@ def test_store_path_precedence() -> None:
             os.environ.pop("HERMES_MEMORY_STORE", None)
         else:
             os.environ["HERMES_MEMORY_STORE"] = previous
+
+
+def test_round_five_pins_the_legacy_arms() -> None:
+    """Round 5 lowered the shipped prior weight; the round-4 rows must survive it.
+
+    M6-M10 and M12 pin the pre-round-5 weight so their published rows stay
+    reproducible, and M11 tracks the shipped default. Drop the pin and every one
+    of those arms silently becomes M11: the report loses the before/after
+    comparison and nothing else fails, so the pin is asserted here.
+    """
+    import engines
+
+    by_name = {arm.name: arm for arm in engines.build_arms()}
+    for name in ("M6 myelinated (pure)", "M7 myelinated +similarity",
+                 "M8 myelinated +knapsack", "M9 myelinated +supersession",
+                 "M10 myelinated +reinforcement",
+                 "M12 myelinated +unbounded candidates"):
+        ok(by_name[name].engine.prior_weight == LEGACY_PRIOR_WEIGHT,
+           "%s must keep the legacy prior weight" % name)
+    ok(by_name["M11 myelinated +lexical ranking"].engine.prior_weight == PRIOR_WEIGHT,
+       "M11 must track the shipped default rather than hardcode it")
+    ok(PRIOR_WEIGHT != LEGACY_PRIOR_WEIGHT,
+       "round 5 must actually change the shipped prior weight")
 
 
 def main() -> int:

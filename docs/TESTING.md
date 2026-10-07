@@ -11,9 +11,15 @@ changed by the review itself.
    decay, the similarity index not invalidated by `retire()`, double
    tokenisation on `add()`, a write-only cluster pass on the refresh hot path —
    lives in the one file nothing tests. **Round-4 status:** closed —
-   `benchmarks/test_engine.py` now covers the engine with 139 checks, and the
-   decay, index-invalidation and update/restatement defects are asserted for real
-   rather than registered as known.
+   `benchmarks/test_engine.py` now covers the engine with 170 checks (139 after
+   round 4), and the decay, index-invalidation and update/restatement defects are
+   asserted for real rather than registered as known. **Round-5 additions:** the
+   settable recall parameters (`prior_weight` and the three candidate ceilings,
+   `0` meaning unbounded), the read-only `candidate_pool()` diagnostic, and the
+   pin that keeps `M6`–`M10`/`M12` on the legacy prior weight while `M11` tracks
+   the shipped default — that last one exists because dropping the pin would
+   silently turn six arms into `M11` and erase the before/after evidence with no
+   test failing.
 2. **The metric definitions are untested.** `benchmarks/metrics.py` has no
    `__main__`; the numbers that decide the verdict (hit rate, nDCG, MRR,
    `stale_leak`, `chars_per_hit`) have never been checked against a
@@ -23,8 +29,11 @@ changed by the review itself.
    arm is beaten, and a criterion scored as FAIL when the run never measured it).
 4. **Almost nothing has been tuned.** Of ~20 engine constants, three families
    were chosen by measurement (`SKETCH_SIZE`, `BAND_ROWS`, `MAX_POSTINGS_SCAN`);
-   everything else is hand-set and marked `ASSUMPTION`. `PRIOR_WEIGHT` is the
-   one whose value visibly degrades ranking.
+   everything else is hand-set and marked `ASSUMPTION`. `PRIOR_WEIGHT` was the
+   one whose value visibly degraded ranking — **round 5 took it to its
+   pre-registered test and it passed, so it is now the first engine constant with
+   a measured provenance** (see §5). One serious instrument defect came with that
+   work: the sweep tool itself could not run at all.
 
 ---
 
@@ -40,8 +49,8 @@ changed by the review itself.
 | `benchmarks/engines.py` | **yes**, 2 asserts | 10 offline arms are built; each has `recall_ms` |
 | `benchmarks/judge.py` | **yes**, 7 asserts | oracle extracts a line from a context; `contains` and `exact` grading; empty context → empty answer; `make_judge("oracle")` mode; `describe()` refuses the LLM label |
 | `benchmarks/stub_llm.py` | **yes**, 5 asserts | the stub's request→response mapping: answering, forced 0 score, HTTP 500 |
-| `benchmarks/test_llm_judge.py` | **yes**, 60 assertions (22 at the time of this review) | the OpenAI- **and** Gemini-protocol paths end to end against the local stub: request shape, parsing, cache, HTTP-500 error, judge selection and descriptions, plus round-4 coverage for the free-tier pace, the 429 backoff, `Retry-After` and the `JUDGE_MAX_CALLS` budget |
-| `benchmarks/test_engine.py` | **yes**, 139 checks (69 at the time of this review) | the engine: bounded diminishing boost, pinned memories, tier thresholds, rendering caps, the budget guarantee on both recall paths, retired-memory exclusion, duplicate collapsing, persistence and store-path precedence — plus a `known_defect()` registry that is now **empty**: the four defects it used to report are fixed and asserted, and the mechanism stays so a new tracked defect can be registered |
+| `benchmarks/test_llm_judge.py` | **yes**, 71 assertions (22 at the time of this review, 60 after round 4) | the OpenAI-, Gemini- **and** NVIDIA-protocol paths end to end against the local stub: request shape, parsing, cache, HTTP-500 error, judge selection and descriptions, round-4 coverage for the free-tier pace, the 429 backoff, `Retry-After` and the `JUDGE_MAX_CALLS` budget, and round-5 coverage proving `auto`/`oracle` stay offline with an NVIDIA key present and that Gemini and OpenAI keep selection priority |
+| `benchmarks/test_engine.py` | **yes**, 170 checks (69 at the time of this review, 139 after round 4) | the engine: bounded diminishing boost, pinned memories, tier thresholds, rendering caps, the budget guarantee on both recall paths, retired-memory exclusion, duplicate collapsing, persistence and store-path precedence — plus a `known_defect()` registry that is now **empty**: the four defects it used to report are fixed and asserted, and the mechanism stays so a new tracked defect can be registered |
 | `benchmarks/synthetic.py` | **yes**, a validator over every scenario | unique ids and event ordering; evidence/stale exist and precede the query; the staleness suites retire (or provably do not retire) their stale ids; filler > 200 so the budget binds; stale/evidence Jaccard < 0.9 so collapsing cannot be mistaken for staleness handling; **globally unique query ids** (a collision would silently corrupt paired statistics) |
 | `benchmarks/public_locomo.py` | prints counts, **asserts nothing** | the LoCoMo conversion that defines that tier's ground truth is unverified |
 
@@ -53,13 +62,13 @@ python3 benchmarks/engines.py          # engines ok
 python3 benchmarks/judge.py            # judge ok
 python3 benchmarks/stub_llm.py         # stub ok
 python3 benchmarks/synthetic.py        # synthetic ok: 14 scenarios, 33 queries, ...
-python3 benchmarks/test_llm_judge.py   # llm judge ok: 60 assertions
+python3 benchmarks/test_llm_judge.py   # llm judge ok: 71 assertions
 python3 benchmarks/run_bench.py        # full run only: writes RESULTS.md + results/raw.json
 ```
 
 So the harness assertions have grown well past the roughly **48** this review
-counted — 60 of them now live in `test_llm_judge.py` alone — and the engine,
-which had none, is covered by **139 checks**. The best check in the repo is still
+counted — 71 of them now live in `test_llm_judge.py` alone — and the engine,
+which had none, is covered by **170 checks**. The best check in the repo is still
 `synthetic.py`'s validator, and it prevents a class of failure
 (query-id collisions) that would have quietly merged two different questions in
 the paired statistics. That list now includes the engine, which is the change this
@@ -142,8 +151,8 @@ Plain Python, no pytest, sibling imports — the same style as
 `benchmarks/test_llm_judge.py`, so each file runs as a script.
 
 **Status: the engine suite is implemented, green, and carries no known-defect
-lines.** `benchmarks/test_engine.py` reports **139 checks** (69 at the time of
-this review) and is listed in §1; its `known_defect()` registry is **empty**,
+lines.** `benchmarks/test_engine.py` reports **170 checks** (69 at the time of
+this review, 139 after round 4) and is listed in §1; its `known_defect()` registry is **empty**,
 because the four defects it used to report (W0.1, W0.7, D13, D14) are fixed and
 asserted. The metric, verdict and harness suites below are still W0.9–W0.10, so
 several of the cases they describe are now fixed in code but unasserted by a test.
@@ -154,7 +163,7 @@ suite is ignored within a week), the suite registers them with
 `known_defect(tracking, description, present)`:
 
 ```
-engine ok: 139 checks
+engine ok: 170 checks
   # and no KNOWN DEFECT line: W0.1, W0.7, D13 and D14 are asserted for real now
 ```
 
@@ -234,7 +243,7 @@ for d in range(1, 31):
 
 ```python
 # 1. replay determinism: same scenario + same arm twice -> identical query_ids, used_ids, chars
-# 2. every one of the 10 arms respects the budget on a fixed scenario
+# 2. every one of the 15 arms respects the budget on a fixed scenario
 # 3. a retire event on the query's own day is applied before the recall
 # 4. downgrade() (currently called from nowhere) returns <= limit chars and is idempotent
 ```
@@ -260,10 +269,10 @@ never instantiates the engine and never calls `verdict()`.
 | `CLUSTER_JACCARD` | 0.5 | **dead**: `_cluster()` writes `mem.cluster`, and nothing reads it |
 | `SUMMARY_MAX_CHARS` / `GIST_MAX_CHARS` | 160 / 64 | hand-set; jointly decide how many memories fit a 2,200-char budget, so they move hit rate and `chars_per_hit` directly |
 | `SKETCH_SIZE` / `BAND_ROWS` / `MAX_POSTINGS_SCAN` | 8 / 1 / 96 | **the only measured values in the engine**: bottom-8 single-hash banding chosen after `r=2` banding measured 62.6% recall at Jaccard 0.93 and was rejected |
-| `MAX_CANDIDATES` | 64 | hand-set cap on comparisons per memory |
-| `RECALL_POOL` | 600 | reasoned (the budget fills long before the pool empties), never swept — probably slack at a 2,200-char budget |
+| `MAX_CANDIDATES` | 64 | hand-set cap on comparisons per memory. Round 5 made all three ceilings settable per instance (`max_candidates`, `max_postings_scan`, `recall_pool`; `0` means unbounded) so they can be ablated, and arm `M12` measures them collectively as **not** the cause of the ranking deficit — `M12` reproduces `M10` exactly on both hold-out seeds |
+| `RECALL_POOL` | 600 | reasoned (the budget fills long before the pool empties), never swept — probably slack at a 2,200-char budget. Consistent with `M12`: lifting it changes nothing on these tiers, because the pool cut is applied to the ranker's input while the ranking path itself scans the live store |
 | `DETAIL_VALUE` | full 1.0, summary 0.55, gist 0.25 | hand-set; the packer's entire preference order rests on these three numbers |
-| `PRIOR_WEIGHT` | 0.35 | hand-set. **The most consequential value in the file**: it is why the same cosine ranker scores nDCG 0.729 as a baseline (M4) but 0.690 with the prior blended in (M7) and 0.606 once the packer reorders (M8) |
+| `PRIOR_WEIGHT` | **0.0** | **MEASURED (round 5)** — the first engine constant whose value was chosen by a pre-registered experiment rather than hand-set. It was 0.35 since round 1, and it was the most consequential value in the file: it is why the same cosine ranker scores nDCG 0.729 as a baseline (M4) but 0.690 with the prior blended in (M7) and 0.606 once the packer reorders (M8). It adds a query-independent constant to a cosine, so a strongly myelinated memory that says nothing about the question can outrank the one that answers it. Arm `M11` (the prior at 0.0 on hold-out seeds 3–4) passed the criterion frozen in `docs/FIX-PLAN.md` F18 — hit rate 0.893, nDCG 0.702/0.697, chars/hit 1276/1283, task success 0.539 — so the prior is demoted to a tie-breaker and the constant ships at 0.0. `LEGACY_PRIOR_WEIGHT = 0.35` pins `M6`–`M10` and `M12` so the round-4 rows stay reproducible, and `M11` tracks the shipped default instead of hardcoding it |
 | `PROTECTED_PRIOR` | 1e6 | reasoned (effectively infinite) |
 | Workload: budget 2200, 60 days, 10 000 memories, filler rates, scenario counts | — | the workload definition itself; changing any of it redefines the benchmark and invalidates comparisons |
 
@@ -276,8 +285,13 @@ never instantiates the engine and never calls `verdict()`.
    see the same curve.
 2. **One knob per arm.** A tuned value ships as its own labelled arm (M11, M12…),
    never folded into M8 — the BM-002 attribution rule.
-3. **Hold out seeds.** Tune on seeds 0–4, report on 5–9. Today there is **one**
-   seed, so no result here is out-of-sample.
+3. **Hold out seeds.** Tune on seeds 0–4, report on 5–9. When this was written
+there was **one** seed, so no result was out-of-sample. Round 5 ran the first
+experiment that satisfies the spirit of the rule — the sweep on seed 0, then the
+confirmatory run on seeds 3 and 4 — which is why the `PRIOR_WEIGHT` decision is
+admissible and the earlier curve was not. Two seeds still fall short of the ≥ 5
+the same protocol asks for, and that gap is recorded in
+[`ROUND5-STRATEGY.md`](ROUND5-STRATEGY.md) §7 rather than glossed over.
 4. **Freeze the criterion before the sweep.** No picking the winning
    configuration after seeing the numbers (BM-004).
 5. **Report the curve, not the winner.** These are pseudo-parameters with no
@@ -291,7 +305,7 @@ never instantiates the engine and never calls `verdict()`.
 
 | # | Sweep | Moves | Why it is first-order |
 | :--- | :--- | :--- | :--- |
-| 1 | `PRIOR_WEIGHT` ∈ {0, 0.1, 0.2, 0.35, 0.5, 1.0} | nDCG@10, hit rate | Directly tests the claim "retrieval strength helps ranking". If nDCG climbs back toward 0.72 as it → 0, the prior is a *cost* to ranking and a benefit only to allocation |
+| 1 | `PRIOR_WEIGHT` ∈ {0, 0.1, 0.2, 0.35, 0.5, 1.0} | nDCG@10, hit rate | **RUN, and DECIDED (round 5).** It tested the claim "retrieval strength helps ranking" and the answer was no: nDCG climbs toward 0.72 as the weight → 0 on LoCoMo, the internal control holds, and the pre-registered hold-out run (`M11`, frozen F18 criterion) passed on both seeds, so the prior was demoted to a tie-breaker. See "Sweep 1, measured" below |
 | 2 | `DETAIL_VALUE` + `GIST_MAX_CHARS` + `SUMMARY_MAX_CHARS` together | chars/hit, hit rate | The allocation level the engine actually wins on; must be swept together because they trade off against each other |
 | 3 | `ACTIVE_THRESHOLD` / `LATENT_THRESHOLD` | tier mix → full-text share | Decides how much content each memory may occupy, which is the same trade as (2) |
 | 4 | `DUPLICATE_JACCARD` ∈ {0.80, 0.85, 0.90, 0.95} | merge count, hit rate | Currently justified by an off-benchmark probe; the benchmark can measure it directly |
@@ -310,7 +324,7 @@ it never writes `RESULTS.md`.
 | **0.00** | 0.539 | 0.893 | **0.672** | **1265** | 0.973 | 1.000 | 1.000 | **0.683** |
 | 0.10 | **0.553** | **0.898** | 0.653 | 1460 | 1.000 | 1.000 | 1.000 | 0.650 |
 | 0.20 | 0.553 | 0.854 | 0.626 | 1535 | 1.000 | 1.000 | 1.000 | 0.500 |
-| **0.35** *(committed)* | 0.553 | 0.825 | 0.606 | 1589 | 1.000 | 1.000 | 1.000 | 0.400 |
+| **0.35** *(the value committed at the time)* | 0.553 | 0.825 | 0.606 | 1589 | 1.000 | 1.000 | 1.000 | 0.400 |
 | 0.50 | 0.553 | 0.811 | 0.593 | 1617 | 1.000 | 1.000 | 1.000 | 0.350 |
 | 1.00 | 0.539 | 0.738 | 0.569 | 1776 | 0.964 | 1.000 | 1.000 | 0.167 |
 
@@ -323,7 +337,9 @@ before the decay fix and before the update/restatement split changed the store.
 The committed M8 row is now **0.835** hit rate, **0.639** nDCG@10 and **1572**
 characters per hit, so the control no longer reproduces it and the sweep must be
 re-run before any of it is quoted again — the conclusion (the prior is a cost to
-ranking) is the reason to re-run it, not to trust the old curve. **And the committed value is the second-worst point
+ranking) is the reason to re-run it, not to trust the old curve. **That re-run
+has since been done and it decided the constant: see "Sweep 1, re-run and
+decided (round 5)" below.** The table above is kept as the round-3 record. **And the committed value is the second-worst point
 on the curve.** At 0.00 the same engine beats the best semantic arm on hit rate
 (0.893 vs 0.874), beats BM25 on chars/hit (1265 vs 1336) and on the LoCoMo tier
 (0.683 vs 0.617), and closes most of the nDCG deficit (0.672 vs BM25's 0.732).
@@ -336,10 +352,59 @@ the myelination thesis being demoted from "better retriever" to "allocation and
 consolidation policy", which is exactly the branch the plan's kill criteria
 describe.
 
-**Why this does not change anything yet:** one seed, swept on the report's own
-206 queries (no hold-out), and not pre-registered. Acting on it now would be
-selecting a configuration after seeing the numbers. The confirmatory run
-(hold-out seeds, criterion frozen in advance) is W1.2 + W6.
+**Why this did not change anything at the time:** one seed, swept on the report's
+own 206 queries (no hold-out), and not pre-registered. Acting on it then would
+have been selecting a configuration after seeing the numbers. The confirmatory
+run (hold-out seeds, criterion frozen in advance) was W1.2 + W6.
+
+#### Sweep 1, re-run and decided (round 5)
+
+The confirmatory run happened. Three things had to be true first, and all three
+were false or unknown before this round:
+
+1. **The instrument had to run at all.** `benchmarks/tune_probe.py` raised
+   `TypeError: tuple indices must be integers or slices, not str` on every
+   invocation — it unpacked `run_bench.evaluate()`'s `(records, ledgers)` return
+   as a bare dict. The curve in this section, and the one quoted on the front
+   page, had therefore **never been produced by the tool that is supposed to
+   produce it**. One-line fix; the internal control then held, which is what
+   makes the re-run admissible.
+2. **The criterion had to be frozen before the run.** It was, in
+   `docs/FIX-PLAN.md` F18, on hold-out seeds 3–4: hit rate ≥ 0.874, nDCG@10 ≥
+   0.672, chars/hit ≤ 1336, task success ≥ 0.533.
+3. **The competing explanation had to be tested.** A second control, `M12`
+   (`M10` with all three candidate ceilings unbounded), reproduces `M10`
+   **exactly** on both hold-out seeds, so capped candidate generation is measured
+   out as the cause. The prior term was the only suspect left standing.
+
+Re-run curve, seed 0 (dev tiers curated/synthetic/staleness, then LoCoMo — the
+dev tiers pick the value, LoCoMo confirms it):
+
+| `PRIOR_WEIGHT` | dev hit rate | dev nDCG@10 | LoCoMo hit rate |
+| ---: | ---: | ---: | ---: |
+| **0.00** | 0.979 | 0.856 | **0.683** |
+| **0.10** | **1.000** | **0.859** | 0.567 |
+| 0.20 | 1.000 | 0.847 | 0.517 |
+| 0.35 *(was committed)* | 1.000 | 0.840 | 0.433 |
+| 0.50 | 1.000 | 0.840 | 0.433 |
+| 1.00 | 1.000 | 0.810 | 0.317 |
+
+**Result on the hold-out seeds** (`--tier all --skip-scale`, 206 queries per arm,
+offline oracle judge), arm `M11` against the frozen thresholds:
+
+| `M11`, seed | task success ≥ 0.533 | hit rate ≥ 0.874 | nDCG@10 ≥ 0.672 | chars/hit ≤ 1336 |
+| :--- | ---: | ---: | ---: | ---: |
+| 3 | **0.539** ✓ | **0.893** ✓ | **0.702** ✓ | **1276** ✓ |
+| 4 | **0.539** ✓ | **0.893** ✓ | **0.697** ✓ | **1283** ✓ |
+
+All four thresholds pass on both seeds, so per the rule F18 wrote the prior is
+demoted to a tie-breaker and `PRIOR_WEIGHT` ships at **0.0**. Against the previous
+leader (`M3k`, BM25's ranking in the engine's packer) `M11` now **ties on hit rate
+(0.893 against 0.893) and on task success, and wins on characters per hit
+(1276/1283 against 1294/1301)**, while still trailing on nDCG (0.702/0.697 against
+0.734/0.731) and on LoCoMo (0.683 against 0.717). The two-seed run does not meet
+this file's own ≥ 5 pooled-seed protocol, and nDCG is the one column where a
+ranking claim would still need it.
 
 **What was measured before this sweep:** nothing in the table above. Two of the
 three values that *are* measured were measured on hand-built probe corpora, and
@@ -352,7 +417,7 @@ producing a 55.6% figure that had to be withdrawn.
 ## 6. What to do with this review
 
 W0.8 (the engine regression suite) is **delivered** — `benchmarks/test_engine.py`,
-139 checks, green, with an **empty** known-defect registry because W0.1, W0.7,
+170 checks, green, with an **empty** known-defect registry because W0.1, W0.7,
 D13 and D14 are all fixed and asserted. The remaining tests are **W0.9 (metric
 and verdict fixtures)** and **W0.10 (harness invariants)** in [PLAN.md](PLAN.md),
 and round 4 makes them the most valuable open work in this review: the
@@ -360,7 +425,21 @@ harness defects they were written to catch (one-of-two flat arms, unmeasured
 criteria scored, skipped judge calls scored) are now fixed in code but still
 pinned by no test. The scale latency criterion is reported as **INFORMATIONAL**
 for the same reason — two identical runs flipped its sign on this host. The sweeps
-above are **W6** (seeds and power) and **R6** (auto-tune), with sweep 1 now partly executed by
-`benchmarks/tune_probe.py` and its confirmatory run scheduled as the attribution
-control **W1.2**. None of them need a decision from the board — they are the
+above are **W6** (seeds and power) and **R6** (auto-tune). Sweep 1 is now
+**executed and decided** — the repaired `benchmarks/tune_probe.py` produced the
+curve, and the confirmatory run shipped as the attribution control **W1.2**
+(§5). None of the remaining sweeps need a decision from the board — they are the
 cheapest way to stop the next arithmetic bug from reaching a published table.
+
+**Round-5 outcome against this review.** Sweep 1 is **done and decided** (§5): the
+prior now sits at 0.0 on measured provenance, confirmed on hold-out seeds, with
+`M12` retiring the candidate-cap explanation that could otherwise have taken its
+place. W0.9 (metric and verdict fixtures) and W0.10 (harness invariants) are
+**still missing**, and round 5 added a fresh reason to want them: a measurement
+defect survived round 4 in exactly the shape this review warns about — every
+engine arm's `nDCG@10` and `nDCG@10 packed` columns were identical because the arm
+never handed the harness a pre-packing order, so the report scored the allocator
+as the ranker (defect D8/F21). Nothing failed; the numbers simply meant something
+other than what their labels said. A fixture asserting that the two columns *can*
+differ would have caught it. Sweeps 2–7 remain open, and sweep 6 (the decay rates)
+is the one that could still move the decay claim.

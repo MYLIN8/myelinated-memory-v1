@@ -15,14 +15,17 @@ measures *evidence availability*: whether the right facts were placed inside the
 budget at all. It cannot measure reasoning, paraphrase, or a model's willingness
 to say "unknown".
 
-``OpenAIJudge`` and ``GeminiJudge`` send real chat completions requests and grade
-with an LLM. They share one transport (``_ChatJudge``) because they speak the
-same wire protocol: Google exposes an OpenAI-compatible endpoint for Gemini, so
-the request shape, the parsing, the cache and the error path are verified once
-and used by both. ``GeminiJudge`` exists because this workspace has a free-tier
-Gemini key and no OpenAI key - and a free tier is exactly the situation where a
-careless client turns a benchmark run into a 429 storm, which is why it carries
-a client-side rate limiter (see below).
+``OpenAIJudge``, ``GeminiJudge`` and ``NvidiaJudge`` send real chat completions
+requests and grade with an LLM. They share one transport (``_ChatJudge``) because
+they speak the same wire protocol: Google's Gemini and NVIDIA's NIM both expose
+OpenAI-compatible endpoints, so the request shape, the parsing, the cache and the
+error path are verified once and used by all three. ``GeminiJudge`` exists because
+this workspace has a free-tier Gemini key and no OpenAI key - and a free tier is
+exactly the situation where a careless client turns a benchmark run into a 429
+storm, which is why it carries a client-side rate limiter (see below).
+``NvidiaJudge`` is the same transport against NVIDIA's hosted endpoint, kept
+deliberately as the *third* provider so a model-judged run does not depend on one
+vendor staying reachable.
 
 Why the distinction must be reported: a system that wins under the oracle judge
 has proven only that its retrievals contain the answer string. A system that
@@ -441,6 +444,30 @@ class GeminiJudge(_ChatJudge):
     default_min_interval_s = 4.0
 
 
+class NvidiaJudge(_ChatJudge):
+    """NVIDIA NIM over its OpenAI-compatible endpoint (https://integrate.api.nvidia.com).
+
+    The key is read from the environment by name only (``NVIDIA_CLOUD_KEY``
+    first); the model id is overridable with ``NVIDIA_MODEL`` because hosted NIM
+    ids are long and move, and a retired one is answered with HTTP 404 rather
+    than silently downgrading. No client-side pace by default: unlike the
+    free-tier Gemini key, nothing here has been measured to need one.
+    """
+
+    mode = "nvidia"
+    env_keys = ("NVIDIA_CLOUD_KEY", "NVIDIA_API_KEY")
+    default_base_url = "https://integrate.api.nvidia.com/v1"
+    # Verified live against integrate.api.nvidia.com. The catalogue listing is not
+    # a guarantee of entitlement: `meta/llama-3.3-70b-instruct` answers HTTP 410
+    # ("reached its end of life on 2026-08-26"), and several models that /models
+    # lists answer HTTP 404 "Function not found for account". This is one of the
+    # three actually reachable from this project's key, picked for being the
+    # cheapest per judged query. Override with NVIDIA_MODEL.
+    default_model = "nvidia/nemotron-3.5-lightning-30b-a3b"
+    base_url_env = "NVIDIA_BASE_URL"
+    model_env = "NVIDIA_MODEL"
+
+
 def _parse_score(raw: str) -> Tuple[float, str]:
     """Extract a 0/1 score from a judge reply, tolerating fences and prose."""
     text = _FENCE_RE.sub("", (raw or "").strip()).strip()
@@ -463,27 +490,33 @@ def _parse_score(raw: str) -> Tuple[float, str]:
 
 # ------------------------------------------------------------------ factory
 def make_judge(mode: str = "auto", **kwargs) -> Judge:
-    """``openai``/``gemini`` pin a model judge, ``oracle`` the deterministic one.
+    """``openai``/``gemini``/``nvidia`` pin a model judge, ``oracle`` the deterministic one.
 
     ``auto`` is the **local, offline** judge, and that is deliberate: the
     canonical command in the README has to stay deterministic and free, so the
     mere presence of an API key in the environment must never turn a
     reproducible run into a network run. ``llm`` is the opt-in "best available
     model judge" (Gemini first, because this workspace's key is free-tier, then
-    OpenAI), and ``gemini``/``openai`` force one provider.
+    OpenAI, then NVIDIA), and ``gemini``/``openai``/``nvidia`` force one
+    provider.
     """
     if mode == "openai":
         return OpenAIJudge(**kwargs)
     if mode == "gemini":
         return GeminiJudge(**kwargs)
+    if mode == "nvidia":
+        return NvidiaJudge(**kwargs)
     if mode == "llm":
         if _first_env(GeminiJudge.env_keys):
             return GeminiJudge(**kwargs)
         if os.environ.get("OPENAI_API_KEY"):
             return OpenAIJudge(**kwargs)
+        if _first_env(NvidiaJudge.env_keys):
+            return NvidiaJudge(**kwargs)
         raise JudgeError(
-            "no model judge key is set. Add GEMINI_KEY or OPENAI_API_KEY, or run "
-            "the offline judge with --judge auto (the default).")
+            "no model judge key is set. Add GEMINI_KEY, OPENAI_API_KEY or "
+            "NVIDIA_CLOUD_KEY, or run the offline judge with --judge auto "
+            "(the default).")
     return OracleJudge(**kwargs)
 
 
@@ -522,5 +555,12 @@ if __name__ == "__main__":
     assert gem.calls == 0 and gem.retries == 0
     assert describe(gem) == "LLM judge (gemini, %s)" % GeminiJudge.default_model
     assert OpenAIJudge(api_key="x").min_interval == 0.0, "a paid endpoint is not paced"
+
+    nv = NvidiaJudge(api_key="not-a-real-key")
+    assert nv.mode == "nvidia" and nv.is_llm is True
+    assert nv.model == NvidiaJudge.default_model
+    assert nv.base_url == "https://integrate.api.nvidia.com/v1"
+    assert nv.calls == 0, "constructing a judge must not make a request"
+    assert describe(nv) == "LLM judge (nvidia, %s)" % NvidiaJudge.default_model
 
     print("judge ok")

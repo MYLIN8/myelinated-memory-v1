@@ -49,7 +49,10 @@ root causes and cannot be fixed piecemeal.
   `judge_state`, and skipped and errored queries are excluded from `task_success`
   and counted in the report header; **D6** — the significance criterion now
   requires **both** flat baselines; **D8** — MRR and nDCG are scored on the arm
-  rank order, with the packed order reported beside it; **D12** — the `%%`
+  rank order, with the packed order reported beside it (round 5 corrected this:
+  the engine arm supplied no pre-packing order, so the harness fell back to the
+  packed order and every engine arm's two nDCG columns were identical — see
+  §0.1); **D12** — the `%%`
   artefact is gone; **D15** — only the full default run writes `RESULTS.md` and
   `results/raw.json`, while a scoped run writes `RESULTS-<tier>.md` and
   `raw-<tier>.json`.
@@ -76,6 +79,43 @@ The published verdict moved with the instruments: **4 of 6 scored criteria
 passed, 1 informational, 0 not measured**, and the two honest failures are
 decay-alone and *significantly better than **both** flat baselines*.
 
+### 0.1 Round-5 status — what round 5 then fixed
+
+Round 5 was the attribution round: it took the open `PRIOR_WEIGHT` question to its
+pre-registered test, and it fixed the instrument that had been unable to answer it.
+The full account is [`ROUND5-STRATEGY.md`](ROUND5-STRATEGY.md).
+
+* **F18 was attempted and it PASSES on both hold-out seeds.** The rule this plan
+  wrote — *"passes → a labelled M11 ships and the prior is demoted to a
+tie-breaker"* — is exactly what was executed, on the criterion frozen in the F18
+  row above: hit rate **0.893/0.893** (≥ 0.874), nDCG@10 **0.702/0.697** (≥ 0.672),
+  chars/hit **1276/1283** (≤ 1336), task success **0.539/0.539** (≥ 0.533), 206
+  queries per arm, offline oracle judge. `PRIOR_WEIGHT` shipped at **0.0**, with
+  `LEGACY_PRIOR_WEIGHT = 0.35` pinning `M6`–`M10` and `M12` so the round-4 rows
+  stay reproducible; `M11` tracks the shipped default instead of the old constant.
+* **The sweep instrument was broken and is now fixed.** `benchmarks/tune_probe.py`
+  raised `TypeError: tuple indices must be integers` on every invocation, because
+  it unpacked `evaluate()`'s `(records, ledgers)` return as a bare dict. The
+  `PRIOR_WEIGHT` curve it reports had therefore never been produced; the re-run,
+  its internal control holding, is what backs the F18 decision.
+* **F21 (W5/D8) shipped.** `RecallResult.ranked_ids` is set at `recall()`'s single
+  return point and `MyelinatedArm._recall` returns it, so `nDCG@10` scores the
+  ranker while `nDCG@10 packed` scores the allocator. Both orders are in the
+  report and the ranker is within 0.05 of the best semantic arm (`M11` 0.702
+  against `M4`'s 0.732), which is this row's acceptance.
+* **The candidate caps are measured out as the cause.** `M12` (unbounded
+  `MAX_CANDIDATES`/`MAX_POSTINGS_SCAN`/`RECALL_POOL`) reproduces `M10` exactly on
+  both seeds, so the ranking deficit was the prior term, not candidate generation.
+* **A model judge was added beyond the F26 plan.** `NvidiaJudge` (`--judge nvidia`,
+  env `NVIDIA_CLOUD_KEY`) joins the Gemini and OpenAI providers, and the dense arm
+  can now reach NVIDIA NIM embeddings. **F26 is still unrun:** no harness-level
+  LLM-judged table exists, because verification consumed the free-tier quota.
+* **Still open from this list:** **F5/F6** (not re-checked), **F12** (informational),
+  **F14/F15** (the metric, verdict and harness fixture files), **F16** (D17, the
+  hidden `[:48]` query-term cap), **F19/F20** (the scale latency and ingest
+  targets), **F22** (the two-seed run does not meet the ≥ 5 pooled-seed protocol),
+  **F23** (decay-alone still leaks 1.000 for `M11`), **F24** and **F25**.
+
 ---
 
 ## 1. Verification log — what was actually run
@@ -83,12 +123,12 @@ decay-alone and *significantly better than **both** flat baselines*.
 | Command | Exit | Observed |
 | :--- | ---: | :--- |
 | `python3 benchmarks/stats.py` | 0 | `stats ok` |
-| `python3 benchmarks/engines.py` | 0 | `engines ok` (10 arms) |
+| `python3 benchmarks/engines.py` | 0 | `engines ok` (10 arms) — **round 4: 13 arms; round 5: 15 arms, with the expected list derived from `ARM_ORDER` instead of a literal** |
 | `python3 benchmarks/judge.py` | 0 | `judge ok` |
 | `python3 benchmarks/stub_llm.py` | 0 | `stub ok` |
 | `python3 benchmarks/synthetic.py` | 0 | `synthetic ok: 14 scenarios, 33 queries, 900 scale memories; staleness ok: 3 + 3` |
-| `python3 benchmarks/test_llm_judge.py` | 0 | `llm judge ok: 22 assertions` (protocol only, against the local stub) — **round 4: 60 assertions** |
-| `python3 benchmarks/test_engine.py` | 0 | `engine ok: 69 checks` + `KNOWN DEFECT W0.1` + `KNOWN DEFECT W0.7` — **round 4: 139 checks, no `KNOWN DEFECT` line** (W0.1, W0.7, D13 and D14 are asserted for real; the registry stays in the file with zero entries so a new tracked defect can go back in) |
+| `python3 benchmarks/test_llm_judge.py` | 0 | `llm judge ok: 22 assertions` (protocol only, against the local stub) — **round 4: 60 assertions; round 5: 71 assertions, with NVIDIA selection and the offline-`auto` guarantee covered** |
+| `python3 benchmarks/test_engine.py` | 0 | `engine ok: 69 checks` + `KNOWN DEFECT W0.1` + `KNOWN DEFECT W0.7` — **round 4: 139 checks, no `KNOWN DEFECT` line; round 5: 170 checks** (W0.1, W0.7, D13 and D14 are asserted for real; the registry stays in the file with zero entries so a new tracked defect can go back in) |
 | `python3 -m py_compile scripts/myelinate.py benchmarks/*.py` | 0 | clean |
 | CLI walk-through, verbatim from `SKILL.md` (§5) | 0 / 0 / 0 / **2** | the documented `recall` is query-blind; `--pure` before `recall` silently ignores `--query`; `recall --pure` is an argparse error |
 
@@ -318,6 +358,18 @@ BM25 + the engine packer. The outcome is Outcome A, cleanly: `M3k` beats every e
 (0.893 against 0.835) and on characters per hit (1296 against 1572). **F18–F25 remain open**; nothing in
 them was attempted in this pass.
 
+**Round-5 status.** **F18** was attempted on the criterion already frozen above and **passed on both
+hold-out seeds**, so the rule it wrote — a labelled `M11` ships and the prior is demoted to a tie-breaker —
+was executed: `PRIOR_WEIGHT` is now **0.0**, `LEGACY_PRIOR_WEIGHT = 0.35` pins `M6`–`M10`/`M12`, and `M11`
+(`0.893` hit rate, `0.702` nDCG, `1276` chars/hit, `0.539` task success on seed 3) becomes the best engine
+arm, level with `M3k` on hit rate and below it on characters per hit. **F21** (W5/D8) shipped with it: the
+engine's pre-packing order is recorded and reported, so `nDCG@10` and `nDCG@10 packed` finally differ for
+the engine arms. **F17's** controls were extended by **M12** (unbounded candidate caps), which reproduces
+`M10` exactly — the caps are measured out as the cause. **F19, F20, F22–F25 remain open**, and the sweep
+instrument (`benchmarks/tune_probe.py`) itself had to be repaired first: it raised
+`TypeError: tuple indices must be integers` on every run. See §0.1 and
+[`ROUND5-STRATEGY.md`](ROUND5-STRATEGY.md).
+
 ### Gate P3 — blocked on a key (see §4)
 
 | ID | Work | Blocked by |
@@ -390,9 +442,11 @@ Acceptance for F5: all six rows become truthful — the documented call passes t
 
 Everything in this document, in order, from the repo root (Python 3.10.12, no network, no key). This is
 the **round-3.5 record**; three of the commands now behave differently, because the fixes landed:
-`test_engine.py` prints 139 checks and no `KNOWN DEFECT` line, a scoped `run_bench.py` writes a derived
-artefact instead of overwriting the report, and a capped judge run counts skips instead of scoring them
-as zeros.
+`test_engine.py` prints 139 checks and no `KNOWN DEFECT` line (170 after round 5), a scoped
+`run_bench.py` writes a derived artefact instead of overwriting the report, and a capped judge run
+counts skips instead of scoring them as zeros. One more command behaved differently after round 5:
+`benchmarks/tune_probe.py` used to abort with `TypeError: tuple indices must be integers` before it
+printed anything, and now produces the curve.
 
 ```bash
 # the whole offline battery — every one must exit 0

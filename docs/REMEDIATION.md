@@ -72,7 +72,7 @@ Three results are negative and are reported as such:
 | **R2b** | Reinforce on *evidence overlap within a correct answer*, or abandon the signal | R2 as built rewards proximity, not causation | task success must not regress vs M8 |
 | **R9** | Cache the similarity index so query-aware recall does not rescore the store | 93 ms p95 at 10k is 1.6x BM25 and 9x the pure engine | recall p95 < BM25 at 10k memories, measured over >= 50 warm queries with the cold start reported separately (today's "p95" is the max of five, so it flips between runs) |
 | **R8b** | Batch the per-session decay sweep, or decay lazily on read | Ingest is still 4.4 s / 10k; the decay loop is O(n) per session | ingest < 1 s per 10k |
-| **R6** | Tune `PRIOR_WEIGHT`, `DETAIL_VALUE`, category decay rates against the synthetic suite | These are the only free parameters and were hand-set | no metric regresses |
+| **R6** | Tune `PRIOR_WEIGHT`, `DETAIL_VALUE`, category decay rates against the synthetic suite | These are the only free parameters and were hand-set | no metric regresses. **`PRIOR_WEIGHT` is done (round 5):** the sweep was re-run on a repaired instrument, the criterion frozen in `docs/FIX-PLAN.md` F18 was applied on hold-out seeds 3-4, and it passed on both - so the constant ships at **0.0** and the prior is demoted to a tie-breaker. `DETAIL_VALUE` and the decay rates remain untuned. |
 | **R10** | Raise the budget for long transcripts, or chunk by session | LoCoMo scores ~0 task success for every arm at 2,200 chars over ~1,450 turns; the tier cannot discriminate | a budget where the best arm beats the worst by a real margin |
 
 ## Assumptions the specification left open
@@ -89,7 +89,7 @@ its constants. The reference implementation fills the gaps and marks each one
 | Tier thresholds | active > 0.5, latent > 0.1 | `ACTIVE_THRESHOLD`, `LATENT_THRESHOLD` |
 | Archived rendering | 64-character content gist, not an id stub | `GIST_MAX_CHARS` (R7) |
 | Detail value weights | full 1.0, summary 0.55, gist 0.25 | `DETAIL_VALUE` |
-| Retrieval-strength prior in packing | 0.35 | `PRIOR_WEIGHT` |
+| Retrieval-strength prior in packing | **0.0** (was 0.35; `LEGACY_PRIOR_WEIGHT` keeps 0.35 for the round-4 arms) | `PRIOR_WEIGHT` — the one constant whose value is now **measured** rather than hand-set: round 5's hold-out run demoted the prior to a tie-breaker |
 | Duplicate / cluster similarity | Jaccard 0.90 / 0.50 | `DUPLICATE_JACCARD`, `CLUSTER_JACCARD` |
 | Duplicate candidate index | MinHash bottom-8 sketch, 97.5% recall at Jaccard 0.96, zero false merges | `SKETCH_SIZE`, `MAX_POSTINGS_SCAN` |
 | Consolidation scope | memories touched since the last refresh | `refresh()` |
@@ -105,8 +105,21 @@ python3 benchmarks/run_bench.py --network          # add the dense-embedding arm
 python3 benchmarks/test_llm_judge.py               # verifies the LLM judge protocol, no key needed
 ```
 
-Every run rewrites `benchmarks/RESULTS.md` and `benchmarks/results/raw.json`,
-recording the exact command, judge, seed and Python version.
+Only the **full default run** rewrites `benchmarks/RESULTS.md` and
+`benchmarks/results/raw.json`, recording the exact command, judge, seed and Python
+version; a scoped run (`--tier`, `--skip-scale`) writes `RESULTS-<tier>.md` and
+`raw-<tier>.json` beside them instead. That guard landed in round 4 as D15 —
+until then any run replaced the published report with a partial one — so the
+scoped commands above are safe to run at any time.
+
+**Round-5 note.** `R6`'s first item is done: the `PRIOR_WEIGHT` sweep was re-run
+on a repaired instrument and then confirmed on hold-out seeds against a criterion
+frozen in advance, so the constant now ships at **0.0** and the prior is a
+tie-breaker. The engine also reports its pre-packing rank order, so `nDCG@10`
+scores the ranker and the new `nDCG@10 packed` column scores the allocator; before
+that fix the two were identical for every engine arm. The decay claim, the
+remaining constants and the LLM-judged run are unchanged. Full account:
+[`ROUND5-STRATEGY.md`](ROUND5-STRATEGY.md).
 
 ## What would falsify the fix
 

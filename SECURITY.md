@@ -29,20 +29,41 @@ The harness is not part of the engine and **does** make network calls. All of th
 
 - `benchmarks/public_locomo.py` downloads the public LoCoMo dataset once, on demand, from
   `raw.githubusercontent.com`. `benchmarks/data/` is git-ignored.
-- `benchmarks/judge.py` posts to a model API only when a judge is given a key. Two
-  endpoints are supported: OpenAI (`--judge openai`) and Google's
-  OpenAI-compatible Gemini endpoint (`--judge gemini`), or `--judge llm` for the
-  first of the two that has a key, Gemini first. The key is read from the
-  environment by name only (`GEMINI_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
-  `OPENAI_API_KEY`), is never logged and never written into a report, and the
-  judge that ran is named in the report header. Gemini runs are paced at 4 s per
-  request by default and retry `429`/`502`/`503`/`504` with backoff, because a
-  free-tier key is the binding constraint.
+- `benchmarks/judge.py` posts to a model API only when a judge is given a key.
+  Three endpoints are supported, all OpenAI-compatible: OpenAI
+  (`--judge openai`), Google's Gemini endpoint (`--judge gemini`) and NVIDIA NIM
+  (`--judge nvidia`), or `--judge llm` for the first of the three that has a key,
+  in the order Gemini, OpenAI, NVIDIA. The keys are read from the environment by
+  name only — `GEMINI_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `OPENAI_API_KEY`,
+  `NVIDIA_CLOUD_KEY`, `NVIDIA_API_KEY` — at the moment of the call, and never
+  logged, echoed, printed, written into a report, or committed. Each provider's
+  base URL and model can be overridden by name (`GEMINI_BASE_URL`, `GEMINI_MODEL`,
+  `OPENAI_BASE_URL`, `NVIDIA_BASE_URL`, `NVIDIA_MODEL`) and the judge that
+  actually ran is named in the report header. Gemini runs are paced at 4 s per
+  request by default and retry `429`/`502`/`503`/`504` with backoff honouring
+  `Retry-After`, because a free-tier key is the binding constraint; a hard
+  `JUDGE_MAX_CALLS` budget raises rather than scoring, and a call that fails is
+  recorded as `errored` rather than averaged in as a wrong answer.
 - The **default judge is not a model.** `python3 benchmarks/run_bench.py` uses the
   deterministic local oracle, and `--judge auto` (the default) stays on it even
   when an API key is present in the environment: an offline, reproducible run
   must not become a network run by accident.
-- `benchmarks/engines.py` calls the embeddings API only with `--network`.
+- `benchmarks/engines.py` calls the embeddings API only with `--network`, and
+  even then only if an embeddings key is present. `DenseEmbeddingArm.from_env()`
+  reads `OPENAI_API_KEY` first and otherwise falls back to `NVIDIA_CLOUD_KEY`,
+  with `NVIDIA_BASE_URL` and `NVIDIA_EMBED_MODEL` for the NIM endpoint. As with
+  the judge, the key is read from the environment by name at call time and is
+  never logged, echoed or committed; the NVIDIA endpoint additionally receives
+  the `input_type` field it requires (`passage` for stored memories, `query` for
+  the recall query), which is request metadata, not a secret.
+
+**No secret value is read, printed, logged or written by this project.** The
+only thing it ever does with a key is pass it to the provider as an
+`Authorization` header on a request the user opted into, and the environment
+listing used during development (`freebuff-env list`) reports key *names* only.
+If you believe a key has been exposed, rotate it at the provider and open an
+issue; there is nothing in the repository history to purge, because no key value
+is ever written to disk.
 
 None of the network paths is the default. The offline self-checks listed in
 [README §4](README.md#4-how-it-is-tested) never open a socket either, and the

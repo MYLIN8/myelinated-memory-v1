@@ -58,7 +58,11 @@ def sweep(name: str, values: Sequence[float], tiers: Sequence[str] = DEFAULT_TIE
         for value in values:
             setattr(myelinate, name, value)
             arm = engines.MyelinatedArm("%s=%g" % (name, value), **ARM)
-            by_arm = run_bench.evaluate(scenarios, [arm], judge, budget, 0)
+            # evaluate() returns (records_by_arm, judge_ledgers). Unpacking it as a
+            # bare dict crashed every sweep with "tuple indices must be integers",
+            # so the one instrument that can attribute an engine constant had never
+            # actually produced a curve. The sweep only needs the records.
+            by_arm, _ledgers = run_bench.evaluate(scenarios, [arm], judge, budget, 0)
             records = by_arm[arm.name]
             rows.append((value, metrics.summarize(records), metrics.by_field(records, "source")))
     finally:

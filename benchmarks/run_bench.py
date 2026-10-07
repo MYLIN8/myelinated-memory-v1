@@ -303,8 +303,12 @@ def verdict(summaries: Dict[str, Dict[str, float]],
     # The hero is fixed in advance and is NOT swapped for whichever arm wins, so
     # the paired tests stay pre-registered. The best-performing engine
     # configuration is reported alongside it rather than instead of it.
-    ladder = [PURE_ARM, "M7 myelinated +similarity", "M8 myelinated +knapsack",
-              "M9 myelinated +supersession", HERO_ARM]
+    # Derived from ARM_ORDER rather than hand-written, so a newly added engine
+    # arm is eligible for "best measured engine configuration" the moment it runs.
+    # A frozen list would let the report name an engine combination the suite no
+    # longer contains, and would hide a better engine row from this criterion
+    # while the table above it showed that row (round 5).
+    ladder = [name for name in ARM_ORDER if "myelinated" in name]
     ranked = [name for name in ladder if name in summaries]
     best_engine = max(ranked, key=lambda name: summaries[name]["hit_rate"]) if ranked else None
 
@@ -451,9 +455,10 @@ def render_report(payload: Dict) -> str:
         add("evidence-containment oracle: it answers with the single most relevant retrieved")
         add("line and scores the gold answer's presence in it. That makes the run free,")
         add("offline and reproducible, but it rewards *surfacing* the evidence rather than")
-        add("*reasoning* over it. Set a key and run `--judge gemini` or `--judge openai` for true")
-        add("task-success numbers. `task_success` counts only queries the judge actually")
-        add("returned; skipped and errored queries are counted in the setup table instead.")
+        add("*reasoning* over it. Set a key and run `--judge gemini`, `--judge openai` or")
+        add("`--judge nvidia` for true task-success numbers. `task_success` counts only")
+        add("queries the judge actually returned; skipped and errored queries are counted in")
+        add("the setup table instead.")
         add("")
 
     add("## Retrieval and context, per arm")
@@ -641,8 +646,10 @@ def render_report(payload: Dict) -> str:
     # a reader who only sees the arm table would otherwise take the engine's
     # hit-rate row for a store success.
     best_engine_name = payload["verdict"].get("best_engine") or HERO_ARM
-    engine_names = [PURE_ARM, "M7 myelinated +similarity", "M8 myelinated +knapsack",
-                    "M9 myelinated +supersession", HERO_ARM]
+    # Same reason as in verdict(): this comparison decides whether a control is
+    # announced as leading *every* engine arm, so it has to cover every engine
+    # arm in the run rather than a list frozen at round 4.
+    engine_names = [name for name in order if "myelinated" in name]
     leading_control = None
     for name in CONTROL_ARMS:
         if name not in summaries:
@@ -743,8 +750,9 @@ def build_notes(include_network: bool) -> List[str]:
     ]
     if not include_network:
         notes.append(
-            "The dense-embedding arm (M5) was not run: it needs OPENAI_API_KEY. "
-            "TF-IDF cosine stands in as the vector-space semantic baseline.")
+            "The dense-embedding arm (M5) was not run: it needs OPENAI_API_KEY or "
+            "NVIDIA_CLOUD_KEY. TF-IDF cosine stands in as the vector-space semantic "
+            "baseline.")
     return notes
 
 
@@ -790,9 +798,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--tier", default="all",
                         choices=["all", "curated", "synthetic", "staleness", "locomo"])
     parser.add_argument("--judge", default="auto",
-                        choices=["auto", "oracle", "openai", "gemini", "llm"],
+                        choices=["auto", "oracle", "openai", "gemini", "nvidia", "llm"],
                         help="auto/oracle = the offline deterministic judge (default); "
-                             "llm = first available model judge; gemini/openai = pin one")
+                             "llm = first available model judge (gemini, then openai, then "
+                             "nvidia); gemini/openai/nvidia = pin one")
     parser.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--locomo-limit", type=int, default=3)
@@ -800,7 +809,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--judge-limit", type=int, default=0,
                         help="cap on judged queries per arm (0 = no cap)")
     parser.add_argument("--network", action="store_true",
-                        help="include the dense-embedding arm (needs OPENAI_API_KEY)")
+                        help="include the dense-embedding arm (needs OPENAI_API_KEY "
+                             "or NVIDIA_CLOUD_KEY)")
     parser.add_argument("--skip-scale", action="store_true")
     parser.add_argument("--scale-memories", type=int, default=SCALE_MEMORIES)
     parser.add_argument("--out", default=RESULTS_DIR)

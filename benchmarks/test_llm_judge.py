@@ -1,11 +1,12 @@
 """Verification that the LLM judge code path works, without touching a real model.
 
-There is no OpenAI key in this environment. Where a key *does* exist (this
-workspace carries a free-tier ``GEMINI_KEY``), these tests still never call it:
-every request goes to `benchmarks/stub_llm.py`, a local server that speaks the
-same chat-completions wire protocol. That matters more than it sounds - a test
-suite that quietly spends the user's quota is worse than no test suite, so the
-key names are cleared and restored around every selection check.
+There is no OpenAI key in this environment. Where keys *do* exist (this
+workspace carries a free-tier ``GEMINI_KEY`` and an ``NVIDIA_CLOUD_KEY``), these
+tests still never call them: every request goes to `benchmarks/stub_llm.py`, a
+local server that speaks the same chat-completions wire protocol. That matters
+more than it sounds - a test suite that quietly spends the user's quota is worse
+than no test suite, so the key names are cleared and restored around every
+selection check.
 
 Scope, stated plainly: it verifies REQUEST SHAPE, RESPONSE PARSING, the
 per-instance CACHE, the HTTP ERROR path, the RATE-LIMIT pacing, the RETRY path
@@ -30,6 +31,7 @@ from judge import (  # noqa: E402 - sys.path root is benchmarks/
     DEFAULT_MAX_CALLS,
     GeminiJudge,
     JudgeError,
+    NvidiaJudge,
     OpenAIJudge,
     OracleJudge,
     describe,
@@ -39,7 +41,8 @@ from stub_llm import reset_throttle, serve_in_thread  # noqa: E402
 
 # Every environment name any judge will look at. Tests clear all of them, so the
 # result never depends on which keys the machine running them happens to have.
-_KEY_NAMES = ("OPENAI_API_KEY", "GEMINI_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+_KEY_NAMES = ("OPENAI_API_KEY", "GEMINI_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+              "NVIDIA_CLOUD_KEY", "NVIDIA_API_KEY")
 
 
 @contextmanager
@@ -208,7 +211,7 @@ def main() -> int:
             check("GEMINI_KEY" in str(no_llm),
                   "the error must name the key to set, got %r" % str(no_llm))
 
-            for mode in ("openai", "gemini"):
+            for mode in ("openai", "gemini", "nvidia"):
                 forced = None
                 try:
                     make_judge(mode)
@@ -239,6 +242,22 @@ def main() -> int:
             check(isinstance(make_judge("auto"), OracleJudge),
                   "auto must stay the offline judge with only an OpenAI key too")
 
+        with keys(NVIDIA_CLOUD_KEY="nv-key"):
+            check(isinstance(make_judge("llm"), NvidiaJudge),
+                  "with only an NVIDIA key, llm must fall back to the NVIDIA judge")
+            check(isinstance(make_judge("auto"), OracleJudge),
+                  "auto must stay the offline judge with only an NVIDIA key too")
+
+        # NVIDIA is the last resort in the llm order: a Gemini or OpenAI key must
+        # still win, so adding a provider cannot silently change which model
+        # judged an existing run.
+        with keys(GEMINI_KEY="stub-key", NVIDIA_CLOUD_KEY="nv-key"):
+            check(isinstance(make_judge("llm"), GeminiJudge),
+                  "Gemini must keep priority over NVIDIA")
+        with keys(OPENAI_API_KEY="other-key", NVIDIA_CLOUD_KEY="nv-key"):
+            check(isinstance(make_judge("llm"), OpenAIJudge),
+                  "OpenAI must keep priority over NVIDIA")
+
         oracle_text = describe(OracleJudge())
         llm_text = describe(judge)
         check("not a language model" in oracle_text,
@@ -250,6 +269,22 @@ def main() -> int:
         # an HTTP 404 from the live endpoint, so the default does move.
         check(gem_text == "LLM judge (gemini, %s)" % GeminiJudge.default_model,
               "a Gemini run must be unmistakable in the report, got %r" % gem_text)
+
+        # The NVIDIA provider is only wired, never called here: the assertions are
+        # about the request target and the report label, because a live call needs
+        # a key and a network this suite deliberately does not use.
+        nv_default = NvidiaJudge(api_key="stub-key")
+        check(nv_default.mode == "nvidia" and nv_default.is_llm is True,
+              "the NVIDIA judge must be a model judge")
+        check(nv_default.model == NvidiaJudge.default_model,
+              "the NVIDIA model id must come from the constant, got %r" % nv_default.model)
+        check(nv_default.base_url.endswith("integrate.api.nvidia.com/v1"),
+              "the NVIDIA endpoint must be the OpenAI-compatible NIM base, got %r"
+              % nv_default.base_url)
+        check(nv_default.calls == 0, "constructing a judge must not spend a request")
+        nv_text = describe(NvidiaJudge(api_key="stub-key"))
+        check(nv_text == "LLM judge (nvidia, %s)" % NvidiaJudge.default_model,
+              "an NVIDIA run must be unmistakable in the report, got %r" % nv_text)
     finally:
         shutdown()
 

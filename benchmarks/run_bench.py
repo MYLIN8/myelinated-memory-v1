@@ -758,7 +758,10 @@ def report_path_for(args: argparse.Namespace) -> str:
     data-loss bug, not a convenience (defect D15).
     """
     if args.report:
-        return args.report if os.path.isabs(args.report) else os.path.join(ROOT, args.report)
+        # An explicit path is honoured as the caller typed it, relative to the
+        # working directory. Joining it to the harness directory turned
+        # `--report benchmarks/x.md` into `benchmarks/benchmarks/x.md`.
+        return os.path.abspath(args.report)
     full = (args.tier == "all" and not args.skip_scale and args.out == RESULTS_DIR)
     if full:
         return os.path.join(ROOT, "RESULTS.md")
@@ -816,10 +819,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         tiers = [args.tier]
 
-    judge = judge_mod.make_judge(args.judge)
-    if args.judge in ("openai", "gemini", "llm") and not judge.is_llm:  # pragma: no cover
-        print("[error] --judge %s needs its API key (GEMINI_KEY or OPENAI_API_KEY)"
-              % args.judge, file=sys.stderr)
+    try:
+        judge = judge_mod.make_judge(args.judge)
+    except judge_mod.JudgeError as exc:
+        # A missing key is a usage error, not a crash: name the variable, exit 2
+        # and replay nothing. Reaching this with --judge openai/gemini/llm means
+        # no provider key is set; auto/oracle cannot get here at all.
+        print("[error] %s" % exc, file=sys.stderr)
         return 2
 
     scenarios = load_scenarios(tiers, args.locomo_limit, args.locomo_queries, args.seed)

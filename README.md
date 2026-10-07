@@ -142,21 +142,23 @@ python3 benchmarks/run_bench.py
 
 33 scenarios / 206 queries / a 2,200-character budget, on a virtual clock. **Thirteen** memory policies compete over an identical event stream, so every arm sees the same adds, accesses, retirements and questions. The engine rows are **the same engine with one capability switched on at a time**, which is what makes each line attributable to a named change; the three `M3t`/`M3p`/`M3k` rows are **controls** (see [§2.3](#23-the-allocator-controls-is-the-win-the-store-or-the-packer)):
 
-| Memory system | Task success | Evidence hit rate | nDCG@10 | Chars per hit | p95 recall (warm, last run) |
-| :--- | ---: | ---: | ---: | ---: | ---: |
-| No memory (control) | 0.000 | 0.000 | 0.000 | - | 0.00 ms |
-| Flat / FIFO store | 0.558 | 0.777 | 0.361 | 1734 | 0.05 ms |
-| Recency / LRU | 0.485 | 0.612 | 0.342 | 2201 | 0.22 ms |
-| Semantic - BM25 | 0.549 | 0.864 | **0.732** | 1336 | 1.00 ms |
-| Control - BM25 + truncated full text (`M3t`) | 0.549 | 0.864 | **0.732** | 1343 | 1.00 ms |
-| Control - BM25 + engine tier ladder (`M3p`) | 0.544 | 0.879 | **0.732** | 1317 | 2.30 ms |
-| **Control - BM25 + engine packer (`M3k`)** | 0.539 | **0.893** | **0.732** | **1296** | 2.73 ms |
-| Semantic - TF-IDF cosine | **0.563** | 0.874 | 0.729 | 1541 | 1.00 ms |
-| Myelinated - as specified | 0.534 | 0.680 | 0.443 | 1935 | 1.63 ms |
-| Myelinated + query similarity | 0.558 | 0.816 | 0.689 | 1614 | 2.62 ms |
-| **Myelinated + value-per-char packing** | 0.558 | 0.835 | 0.639 | **1572** | 4.16 ms |
-| Myelinated + supersession | 0.558 | 0.835 | 0.639 | 1572 | 3.52 ms |
-| Myelinated + utility reinforcement *(hero)* | 0.553 | 0.830 | 0.615 | 1596 | 3.71 ms |
+| Memory system | Task success | Evidence hit rate | nDCG@10 | Chars per hit |
+| :--- | ---: | ---: | ---: | ---: |
+| No memory (control) | 0.000 | 0.000 | 0.000 | - |
+| Flat / FIFO store | 0.558 | 0.777 | 0.361 | 1734 |
+| Recency / LRU | 0.485 | 0.612 | 0.342 | 2201 |
+| Semantic - BM25 | 0.549 | 0.864 | **0.732** | 1336 |
+| Control - BM25 + truncated full text (`M3t`) | 0.549 | 0.864 | **0.732** | 1343 |
+| Control - BM25 + engine tier ladder (`M3p`) | 0.544 | 0.879 | **0.732** | 1317 |
+| **Control - BM25 + engine packer (`M3k`)** | 0.539 | **0.893** | **0.732** | **1296** |
+| Semantic - TF-IDF cosine | **0.563** | 0.874 | 0.729 | 1541 |
+| Myelinated - as specified | 0.534 | 0.680 | 0.443 | 1935 |
+| Myelinated + query similarity | 0.558 | 0.816 | 0.689 | 1614 |
+| **Myelinated + value-per-char packing** | 0.558 | 0.835 | 0.639 | **1572** |
+| Myelinated + supersession | 0.558 | 0.835 | 0.639 | 1572 |
+| Myelinated + utility reinforcement *(hero)* | 0.553 | 0.830 | 0.615 | 1596 |
+
+Retrieval quality is reproducible: two runs of the same commit produced identical task success, hit rate, nDCG and chars per hit for every arm. **Latency is not, so it is not quoted here** — it is measured and printed in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md), and it moves by a factor of two or more between identical runs on this machine ([§2.5](#25-at-10000-memories-over-60-virtual-days)).
 
 A control is not a baseline: `M3k` ranks with BM25 and only fills the budget the engine's way, so it is not the arm the engine is judged against. It is also the arm that now wins, which [§2.3](#23-the-allocator-controls-is-the-win-the-store-or-the-packer) is about.
 
@@ -217,14 +219,16 @@ D7 asked whether the engine's budget-efficiency win came from its memory policy 
 
 Every figure is the **median of three timed passes** over the same queries, with the per-pass spread kept in `results/raw.json`. These are wall-clock numbers on one shared machine and they stay noisier than the retrieval metrics.
 
-| Arm | Stored | Ingest | Session refresh | Recall p50 | Recall p95 |
-| :--- | ---: | ---: | ---: | ---: | ---: |
-| Semantic - BM25 | 10000 | 0.04 s | 0.00 s | 28.8 ms | 43.1 ms |
-| Semantic - TF-IDF | 10000 | 0.01 s | 0.00 s | 23.2 ms | 98.9 ms |
-| Myelinated - as specified | 9998 | 5.7 s | 3.2 s | 15.4 ms | **19.8 ms** |
-| Myelinated + value-per-char packing | 9998 | 5.1 s | 2.9 s | 27.4 ms | 28.3 ms |
+| Arm | Stored | Ingest | Session refresh |
+| :--- | ---: | ---: | ---: |
+| Semantic - BM25 | 10000 | 0.04 s | 0.00 s |
+| Semantic - TF-IDF | 10000 | 0.01 s | 0.00 s |
+| Myelinated - as specified | 9998 | 5.4 s | 3.1 s |
+| Myelinated + value-per-char packing | 9998 | 5.2 s | 3.0 s |
 
 The stored counts moved for M9/M10 (9998 → 10000): the update path stores the newer wording instead of absorbing it into an existing entry.
+
+Recall latency is in the report rather than here, deliberately. The engine is faster than BM25 on some runs and slower on others — 23.9 ms against 52.9 ms in one pair of identical runs, 34.3 ms against 30.9 ms in the next — with a per-pass spread of up to 5x, so the report prints the numbers and marks the scale criterion **informational** instead of scoring it.
 
 ### 2.6 The pre-registered decision rule (version 3)
 
@@ -258,7 +262,7 @@ The pre-registered hero arm is *not* swapped for whichever arm won — M10 is re
 *   **Supersession works.** With an explicit retire signal, stale facts leak **0.000**. But every store can implement that by deleting, so it is not a myelination advantage; it is a feature, not evidence for the thesis. What round 4 added is that a *correction* is now stored rather than absorbed (D13/D14), which the benchmark does not exercise — its staleness fixtures stay deliberately below the collapse threshold.
 *   **Decay is no longer clearly wrong — and still not proven.** With the arithmetic repaired, the pure configuration leaks **0.000** on the decay-only suite while retrieving **1.000** of the evidence, where in round 3 it leaked 1.000. It is the first configuration in this project to retire a stale fact by decay alone. But the configured hero **M10 still leaks 1.000**, the suite is three scenarios with one query each (the leak can only take values in {0, ⅓, ⅔, 1}), and criterion 5 therefore still **fails**. Recorded as a low-power lead, not a capability.
 *   **Utility reinforcement still hurts slightly.** Learning from memories that were present when an answer came out right *lowered* hit rate (M8 0.835 → M10 0.830) and task success (0.558 → 0.553). Reinforcing everything that was nearby rewards proximity, not causation.
-*   **One real cost, and one measurement too noisy to claim.** Ingest is 5.1–5.7 s per 10,000 memories against flat memory's 0.010 s. On recall latency, the median-of-three measurement now puts the configured engine **below** BM25 (28.3 ms against 43.1 ms p95) and the pure configuration well below it (19.8 ms) — but this is exactly the number that flipped sign between two identical runs, so the report marks the criterion **informational** rather than claiming a win. The query-*blind* engine is the fastest *myelinated* configuration; a flat store answers in well under a millisecond because it does no scoring at all.
+*   **One real cost, and one measurement too noisy to claim.** Ingest is ~5 s per 10,000 memories against flat memory's 0.010 s, and session refresh for the engine family is ~3 s. Recall latency is a different story: it flips sign between identical runs (the engine beat BM25 in one pair and lost in the next, with a per-pass spread up to 5x), so the report prints the figures and marks that criterion **informational** rather than claiming a win either way. The query-*blind* engine is the fastest *myelinated* configuration; a flat store answers in well under a millisecond because it does no scoring at all.
 *   **BM25 still ranks better.** nDCG@10 is **0.732** for BM25 against **0.639** for the configured engine, so semantic retrieval puts the evidence *higher* even when the engine eventually surfaces it. The instrument now reports the rank order and the packed order in separate columns (D8); for the engine arms they are identical because the engine's `recall()` exposes only the packed order, and the controls' 0.732 is unmoved by packing (0.734), so this one is real rather than an allocator artifact.
 
 **The honest summary: use the configured engine for its zero infrastructure, pinned-memory guarantees and duplicate collapsing — not because it retrieves better than a semantic index.** If you only care about retrieval quality and can run BM25, BM25 competes with or beats it on every ranking metric.
@@ -453,7 +457,7 @@ Scenarios come from four tiers: a curated suite, a seeded synthetic generator, t
 * The tables above used the **offline oracle judge**, which rewards *surfacing* evidence rather than reasoning over it — so the task-success column is a lower bound, not a substitute for a model-judged run. Every report labels which judge produced it. The top two arms differ by 0.005 task success (TF-IDF 0.563 vs M10 0.553), which is smaller than any plausible judge noise, so **"answers more questions correctly" is unproven** until a full `--judge llm` run completes. That path is now integrated and verified live, but the free-tier quota was exhausted during the verification, so no model has scored a whole run yet.
 * The two staleness suites are reported separately because a supersession win is not a decay win.
 * On the LoCoMo tier — a ~1,450-turn transcript against a 2,200-character budget, with turns labelled ephemeral — every arm scores near zero task success. It is kept because it is public, not because it flatters anything, and §2.3 shows it is where the headline gap lives.
-* The retrieval metrics are stable across runs: two identical runs of this commit produced identical hit rate, nDCG and chars-per-hit for every arm. The latency figures are **not**, and the report now says so rather than scoring them. Warm recalls are separated from each scenario's first (cold) recall, the scale figures are the median of three timed passes with the per-pass spread kept in `results/raw.json`, and two identical runs still measured M10 at 23.9 ms and 34.3 ms p95 against BM25 at 52.9 ms and 30.9 ms. That is why the scale criterion is reported as **informational**. Treat any latency difference below a factor of two on this machine as noise.
+* The retrieval metrics are stable across runs: two identical runs of this commit produced identical hit rate, nDCG and chars-per-hit for every arm. The latency figures are **not**, and the report now says so rather than scoring them. Warm recalls are separated from each scenario's first (cold) recall, the scale figures are the median of three timed passes with the per-pass spread kept in `results/raw.json`, and identical runs still flipped the sign of the engine-versus-BM25 comparison. That is why the scale criterion is reported as **informational**. Treat any latency difference below a factor of two on this machine as noise, and read the numbers from the report you are reproducing rather than from a page like this one.
 * Every figure here is taken from [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md), the report produced by the run recorded at the top of that file.
 
 ---

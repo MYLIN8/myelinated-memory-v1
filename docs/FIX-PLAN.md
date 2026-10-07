@@ -18,6 +18,64 @@ by what they cost you if left alone — data loss first, harness honesty second,
 can be tested for (D13, D14) are registered in `benchmarks/test_engine.py`, so they cannot be
 forgotten the way the compounding decay was.
 
+**Round-4 status is recorded in §0 below.** The list that follows is kept as the
+round-3.5 record, with its evidence; where a defect has since been repaired, the
+entry says so.
+
+---
+
+## 0. Round-4 status — what has since been fixed
+
+Round 4 landed Gate P0 and most of Gate P1 in **one** change set, because the
+design ([`ROUND4-DESIGN.md`](ROUND4-DESIGN.md)) showed the defects reduce to two
+root causes and cannot be fixed piecemeal.
+
+* **Fixed in the engine** (`scripts/myelinate.py`): **D1** — a memory stores
+  `(score, score_at)` and its strength is *derived*, so `realize()` is idempotent
+  at a fixed `now` and `refresh()` folds only the decay not yet applied; **D9** —
+  `retire()` and `pin()` invalidate the similarity index through one `_touch()`
+  funnel; **D13** and **D14** — an update at 0.90+ Jaccard with a *different*
+  token set is stored as a new memory and the older entry is retired with
+  `superseded_by`, while an identical token set still collapses as a restatement
+  (gated by `auto_supersede=True` so a later arm can attribute it); **D18's
+  `pin()`** — pinning a retired memory now returns `False` instead of
+  resurrecting it as a hidden 1.0. The store schema is version 3, with a migration
+  that sets `score_at` from `last_access`, without which a migrated file would
+  decay from the epoch.
+* **Fixed in the harness** (`benchmarks/run_bench.py`, `benchmarks/metrics.py`):
+  **D3** — the merged leak column is gone and the two staleness suites are
+  reported separately per arm; **D4** — an unmeasured criterion reports
+  `NOT MEASURED` and leaves the denominator; **D5 + D16** — every query carries a
+  `judge_state`, and skipped and errored queries are excluded from `task_success`
+  and counted in the report header; **D6** — the significance criterion now
+  requires **both** flat baselines; **D8** — MRR and nDCG are scored on the arm
+  rank order, with the packed order reported beside it; **D12** — the `%%`
+  artefact is gone; **D15** — only the full default run writes `RESULTS.md` and
+  `results/raw.json`, while a scoped run writes `RESULTS-<tier>.md` and
+  `raw-<tier>.json`.
+* **Partly fixed — D2.** Warm recalls are separated from cold with p50/p95/p99
+  plus a `cold_ms` mean, and the scale figures are the median of three timed
+  passes. Wall-clock latency on this host is still noisier than the effect, though:
+  two identical runs flipped the sign of the scale criterion (121.9 ms against
+  101.3 ms, then 108.1 ms against 126.4 ms). That criterion is therefore reported
+  as `INFORMATIONAL` and excluded from the scored denominator, and the decision
+  rule is now **version 3**, printed in the report.
+* **D7 is answered, not patched.** The three new allocator controls — **M3t**
+  (BM25 + truncated text), **M3p** (BM25 + the engine ladder) and **M3k** (BM25 +
+  the engine packer) — share BM25 ranking and vary only how the budget is filled.
+  `M3k` reaches hit rate **0.893** against the best engine arm **0.835**, at
+  **1296** characters per hit against **1572**, and **0.717** against **0.433** on
+  LoCoMo. The engine budget win is its **packer**, not its **store**, and the
+  report states that next to the verdict.
+* **Still open:** **D10** (the skill invocation drift — not re-checked in this
+  pass), **D17** (`QUERY_TERM_LIMIT` is still a literal inside
+  `similarity_scores()`), and the remainder of **D18** (`_prune()` shortfall
+  reporting, `recall` saving the store, the unused `w_minus` argument).
+
+The published verdict moved with the instruments: **4 of 6 scored criteria
+passed, 1 informational, 0 not measured**, and the two honest failures are
+decay-alone and *significantly better than **both** flat baselines*.
+
 ---
 
 ## 1. Verification log — what was actually run
@@ -29,8 +87,8 @@ forgotten the way the compounding decay was.
 | `python3 benchmarks/judge.py` | 0 | `judge ok` |
 | `python3 benchmarks/stub_llm.py` | 0 | `stub ok` |
 | `python3 benchmarks/synthetic.py` | 0 | `synthetic ok: 14 scenarios, 33 queries, 900 scale memories; staleness ok: 3 + 3` |
-| `python3 benchmarks/test_llm_judge.py` | 0 | `llm judge ok: 22 assertions` (protocol only, against the local stub) |
-| `python3 benchmarks/test_engine.py` | 0 | `engine ok: 69 checks` + `KNOWN DEFECT W0.1` + `KNOWN DEFECT W0.7` |
+| `python3 benchmarks/test_llm_judge.py` | 0 | `llm judge ok: 22 assertions` (protocol only, against the local stub) — **round 4: 60 assertions** |
+| `python3 benchmarks/test_engine.py` | 0 | `engine ok: 69 checks` + `KNOWN DEFECT W0.1` + `KNOWN DEFECT W0.7` — **round 4: 139 checks, no `KNOWN DEFECT` line** (W0.1, W0.7, D13 and D14 are asserted for real; the registry stays in the file with zero entries so a new tracked defect can go back in) |
 | `python3 -m py_compile scripts/myelinate.py benchmarks/*.py` | 0 | clean |
 | CLI walk-through, verbatim from `SKILL.md` (§5) | 0 / 0 / 0 / **2** | the documented `recall` is query-blind; `--pure` before `recall` silently ignores `--query`; `recall --pure` is an argparse error |
 
@@ -94,6 +152,9 @@ new memory. Cheapest correct version: skip when `other.retired`.
 `retired == False`, and `recall(...).used_ids == [new]`; `benchmarks/test_engine.py` asserts it (it
 now registers D13 as a known defect, so it flips to `RESOLVED` on the day of the fix).
 **Size:** S.
+**Status (round 4): fixed.** Retired memories are excluded from candidate generation, so the update is
+stored as a new memory and `recall` returns it; `test_engine.py` now asserts the probe above instead of
+registering it.
 
 ### D14 — an update to a *live* memory is silently discarded (P1)
 
@@ -115,6 +176,10 @@ when the new text disagrees on a token the old one has, keep the **new** content
 wording present after the second `add`; a distinct restatement still returns one entry, not two.
 **Size:** S–M. **Note:** changes stored-entry counts (today's bench stores 9 998 of 10 000), so the
 full report must be regenerated and labelled (BM-006 protocol) — see §3.
+**Status (round 4): fixed.** A 0.90+ pair whose token set differs is stored as an update and the older
+entry is retired with `superseded_by`; only an identical token set still collapses as a restatement.
+`add` still returns a bare memory id, so the optional machine-readable action marker is **not**
+implemented. The full report was regenerated and relabelled under the new decision-rule version.
 
 ### D15 — a scoped run overwrites the committed report (P0 for the published artefact)
 
@@ -135,6 +200,9 @@ derived name unless the run is the full default one (`RESULTS.md` only for a ful
 refuse to overwrite a report produced by a *different* command line.
 **Files:** `benchmarks/run_bench.py`. **Acceptance:** a scoped run leaves the committed report's md5
 unchanged, and a full run still writes `RESULTS.md`. **Size:** S.
+**Status (round 4): fixed.** The rule is as proposed: only a full default run writes `RESULTS.md` and
+`results/raw.json`; a scoped run writes `RESULTS-<tier>.md` and `raw-<tier>.json`. The same data-loss
+bug in the raw evidence file was closed at the same time.
 
 ### D16 — judge failures are scored as failures and reported nowhere (P1, same family as D5)
 
@@ -146,6 +214,10 @@ the API halfway through reports a **lower task success** rather than a partial r
 **Files:** `benchmarks/run_bench.py`, `benchmarks/metrics.py`. **Acceptance:** a stub judge stubbed to
 fail on half the queries reports `task_success` equal to the uncapped healthy value plus an explicit
 `judge_errors` count. **Size:** S.
+**Status (round 4): fixed.** Each query carries an explicit `judge_state` of judged, skipped or
+errored; `metrics.summarize` averages only judged queries, and the report header prints
+`judged / skipped / errored`. A real 429 during verification produced nine backoff retries and then a
+`JudgeError` counted as `errored`, never scored as a wrong answer.
 
 ### D17 — a ranking parameter is hidden inside a function body (P2)
 
@@ -156,6 +228,8 @@ decides which query terms can contribute to every similarity score, i.e. to rank
 to `docs/TESTING.md` §5 and to the sweep list (sweep 1's neighbours).
 **Files:** `scripts/myelinate.py`, `docs/TESTING.md`. **Acceptance:** the constant appears in both
 inventories; top-10 ids are unchanged for a fixed corpus (behaviour-preserving hoist). **Size:** S.
+**Status (round 4): still open.** The literal is unchanged and the constant is still absent from both
+inventories.
 
 ### D18 — small correctness and hygiene holes (P3)
 
@@ -170,6 +244,9 @@ inventories; top-10 ids are unchanged for a fixed corpus (behaviour-preserving h
 * `stats._exact_two_sided_p(ranks, w_plus, w_minus)` never reads `w_minus`.
 
 **Acceptance:** one assertion each in `test_engine.py` / `stats.py`. **Size:** S total.
+**Status (round 4): partly fixed.** `pin()` refuses a retired memory and returns `False`, and
+`test_engine.py` asserts it. The `_prune()` shortfall, the CLI `recall` that saves, and the unused
+`w_minus` argument are unchanged.
 
 ---
 
@@ -188,6 +265,11 @@ is written before the work and is not adjusted after seeing numbers (BM-004).
 | **F4** | **D12** — the `%%` literal | `benchmarks/run_bench.py` | `grep -c '20%%'` is 0 after a full regeneration | S |
 | **F5** | **D10** — the interface tells the truth | `SKILL.md`, README §7, `scripts/myelinate.py` | every `SKILL.md` command runs verbatim; the documented `recall` passes the question; `--category` documented; `--pure --query` **errors** instead of silently ignoring the query; `list`/`stats` documented | M |
 | **F6** | **D11** — the two false claims | `SECURITY.md` | no "no network calls" / "sanitized inputs"; the three network call sites named and the opt-in flags documented | S |
+
+**Round-4 status.** **F1** (D15), **F2** (D13) and **F4** (D12) landed, so no published artefact is
+destroyed and no correction is lost. **F3** (D14) landed as the update/restatement split; the optional
+machine-readable action marker was not implemented, so `add` still returns a bare id. **F5** (D10) and
+**F6** (D11) were not re-checked in this pass.
 
 Because F2/F3 change how many entries the store keeps, the full benchmark must be re-run **after**
 them and every affected table relabelled: stored counts and any dedupe-dependent number are
@@ -209,6 +291,13 @@ artefact/doc-only and can land immediately.
 | **F15** | **W0.10** — harness invariants | `benchmarks/test_harness.py` (new) | same seed → identical records; every one of the 10 arms respects the budget; `downgrade()` is ≤ limit and idempotent | S |
 | **F16** | **D17** — hoist `QUERY_TERM_LIMIT` | `scripts/myelinate.py`, `docs/TESTING.md` | constant in both inventories; top-10 ids unchanged | S |
 
+**Round-4 status.** **F7** (D1), **F8** (D9), **F9** (D4), **F10** (D5 + D16), **F11** (D6) and
+**F13** (D3) landed and are asserted by the suites. **F12** (D2) landed only in part: cold recalls are
+reported separately and the scale figures are a median of three timed passes, but the criterion is still
+too noisy to score on this host, so it is reported as `INFORMATIONAL` rather than PASS or FAIL. **F14**
+and **F15** (the metric, verdict and harness fixture files) and **F16** (D17, `QUERY_TERM_LIMIT`) are
+**still open**.
+
 ### Gate P2 — attribution, then engine work (only after P1 is green)
 
 | ID | Fix | Files | Acceptance | Size |
@@ -223,18 +312,26 @@ artefact/doc-only and can land immediately.
 | **F24** | **D18** — the small holes | `scripts/myelinate.py`, `benchmarks/stats.py` | one assertion each | S |
 | **F25** | **W8 / D11** — a scripted guard that every quantitative README claim matches a report row | `README.md`, `benchmarks/run_bench.py` | the claims register is empty of UNSUPPORTED | M |
 
+**Round-4 status.** **F17** (D7) shipped — as three controls rather than one, so the allocator can be
+separated from the ranking: **M3t** BM25 + truncated text, **M3p** BM25 + the engine ladder, and **M3k**
+BM25 + the engine packer. The outcome is Outcome A, cleanly: `M3k` beats every engine arm on hit rate
+(0.893 against 0.835) and on characters per hit (1296 against 1572). **F18–F25 remain open**; nothing in
+them was attempted in this pass.
+
 ### Gate P3 — blocked on a key (see §4)
 
 | ID | Work | Blocked by |
 | :--- | :--- | :--- |
-| **F26** | **W9** — the LLM-judged run (curated + synthetic tiers, cost-capped, `judged_queries` reported, numbers labelled LLM-judged) | `OPENAI_API_KEY` |
-| **F27** | **M5 dense-embeddings arm** (`--network`) | `OPENAI_API_KEY` |
+| **F26** | **W9** — the LLM-judged run (curated + synthetic tiers, cost-capped, `judged_queries` reported, numbers labelled LLM-judged) | no longer blocked on a key: the Gemini judge is integrated and a free-tier `GEMINI_KEY` is configured. Still unrun — the free-tier quota was exhausted during verification, so no harness-level LLM-judged table exists |
+| **F27** | **M5 dense-embeddings arm** (`--network`) | still `OPENAI_API_KEY` (the embeddings arm is separate from the judge and remains absent from every table) |
 
 ---
 
-## 4. The missing API key: what it blocks, and what it does not
+## 4. The Gemini key: what it unblocks, and what it does not
 
-The key is missing, so two things are **not proven** and must not be claimed:
+Round 4 added the **judge integration and a free-tier Gemini key** (`GEMINI_KEY`), so the LLM path is
+no longer blocked on the OpenAI key. Two things are nevertheless **not proven** and must not be
+claimed:
 
 1. **Task success with a language model.** Every `task_success` figure on the page is the
    deterministic oracle's, which rewards *surfacing* the evidence, not *reasoning* over it. What *is*
@@ -250,16 +347,24 @@ task success (TF-IDF 0.563 vs M8/M10 0.553), a gap inside the oracle's noise flo
 **no task-success claim may ship** until a model judges it. Everything in §3 is offline, free and
 proven by the commands in §6.
 
-The day a key exists: put `OPENAI_API_KEY` in the environment (Settings → Environment / Keys), then
+With `GEMINI_KEY` set, the model-judged path is one flag away:
 
 ```bash
-python3 benchmarks/run_bench.py --judge openai                    # real task success
-python3 benchmarks/run_bench.py --judge openai --tier curated     # cheaper, scoped
-python3 benchmarks/run_bench.py --network                         # + the dense arm
+python3 benchmarks/run_bench.py --judge gemini --tier curated     # real task success, scoped
+python3 benchmarks/run_bench.py --judge gemini --judge-limit 200  # capped, and the cap is honest now
+python3 benchmarks/run_bench.py --judge llm                       # first available model judge
+python3 benchmarks/run_bench.py --network                         # still needs OPENAI_API_KEY
 ```
 
-Do **not** use `--judge-limit` for those runs until **F10** lands: today a capped run silently scores
-every skipped query as 0.0.
+Three things the round-4 integration guarantees, all verified live: `auto` and `oracle` stay the
+**offline** judge, so a key in the environment can never silently turn the reproducible default run
+into a network run; a free-tier key is paced (4 s per request by default, `JUDGE_MIN_INTERVAL` to
+change it) with 429/502/503/504 retried under exponential backoff that honours `Retry-After`, and a
+hard `JUDGE_MAX_CALLS` budget (400) that raises instead of scoring; and a call that fails is counted
+as `errored` rather than averaged in as a wrong answer, so `--judge-limit` is safe now that **F10**
+has landed. What is *not* proven is any task-success number under a model judge: two live calls
+succeeded (answer, then a 1.0 grade) and the quota was then exhausted, which is why no table in
+`RESULTS.md` is labelled LLM-judged.
 
 ---
 
@@ -283,7 +388,11 @@ Acceptance for F5: all six rows become truthful — the documented call passes t
 
 ## 6. Reproduce / verification log
 
-Everything in this document, in order, from the repo root (Python 3.10.12, no network, no key):
+Everything in this document, in order, from the repo root (Python 3.10.12, no network, no key). This is
+the **round-3.5 record**; three of the commands now behave differently, because the fixes landed:
+`test_engine.py` prints 139 checks and no `KNOWN DEFECT` line, a scoped `run_bench.py` writes a derived
+artefact instead of overwriting the report, and a capped judge run counts skips instead of scoring them
+as zeros.
 
 ```bash
 # the whole offline battery — every one must exit 0
@@ -333,6 +442,11 @@ grep -n "20%%" benchmarks/run_bench.py                 # still generated at :298
 `benchmarks/test_engine.py`, and the cross-references in `docs/PLAN.md`, `README.md` and
 `docs/project-state.json`. No engine or harness behaviour changed; no committed result was regenerated.
 
+**What round 4 then changed:** the engine (decay, index invalidation, the update/restatement split,
+`pin()`), the harness (the judge-state ledger, rank-order metrics, warm/cold latency, the leak split,
+the report guard, the informational scale criterion), three new allocator control arms, the Gemini
+judge, and the regenerated report under decision-rule version 3. §0 is the summary.
+
 ---
 
 ## 7. Definition of done
@@ -349,3 +463,11 @@ grep -n "20%%" benchmarks/run_bench.py                 # still generated at :298
 **Do these six first** (an afternoon, all S): **F1, F2, F4, F9, F10, F11** — they need no board
 ruling, they stop an artefact being destroyed and a fact being lost, and three of them can be proven
 by a command in this document.
+
+**Round-4 outcome against this list.** **P0 is closed**: F1, F2 and F4 landed, F3 landed without the
+action marker, and F5/F6 were not re-checked here. **P1 is closed except F12, F14, F15 and F16**: F12
+is partial by measurement — the scale criterion is informational, not scored — and the missing fixture
+files are still missing. **P2 is reported, not finished**: F17 answered the attribution question in
+favour of the allocator, and nothing else in the gate was attempted. The definition of done is
+therefore met for the instrument, and still open for the claims: no task-success number under a
+language model exists, and the decay claim is still unproven.

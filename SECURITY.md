@@ -29,13 +29,28 @@ The harness is not part of the engine and **does** make network calls. All of th
 
 - `benchmarks/public_locomo.py` downloads the public LoCoMo dataset once, on demand, from
   `raw.githubusercontent.com`. `benchmarks/data/` is git-ignored.
-- `benchmarks/judge.py` posts to the OpenAI API only when a judge is given a key
-  (`--judge openai`).
+- `benchmarks/judge.py` posts to a model API only when a judge is given a key. Two
+  endpoints are supported: OpenAI (`--judge openai`) and Google's
+  OpenAI-compatible Gemini endpoint (`--judge gemini`), or `--judge llm` for the
+  first of the two that has a key, Gemini first. The key is read from the
+  environment by name only (`GEMINI_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
+  `OPENAI_API_KEY`), is never logged and never written into a report, and the
+  judge that ran is named in the report header. Gemini runs are paced at 4 s per
+  request by default and retry `429`/`502`/`503`/`504` with backoff, because a
+  free-tier key is the binding constraint.
+- The **default judge is not a model.** `python3 benchmarks/run_bench.py` uses the
+  deterministic local oracle, and `--judge auto` (the default) stays on it even
+  when an API key is present in the environment: an offline, reproducible run
+  must not become a network run by accident.
 - `benchmarks/engines.py` calls the embeddings API only with `--network`.
 
-The offline default (`python3 benchmarks/run_bench.py`) uses the deterministic local judge and
-touches no network. The seven offline self-checks listed in
-[README §4](README.md#4-how-it-is-tested) never do either.
+None of the network paths is the default. The offline self-checks listed in
+[README §4](README.md#4-how-it-is-tested) never open a socket either, and the
+judge protocol is tested against a local stub, so no key is needed to run them.
+Memory text is not sanitised anywhere in this project: the harness passes
+retrieved content to the judge verbatim, exactly as the engine does, so a store
+that contains untrusted text is an injection surface into the answering model as
+well.
 
 ## Supported versions
 

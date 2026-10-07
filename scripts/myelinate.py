@@ -40,7 +40,7 @@ import zlib
 from dataclasses import asdict, dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_STORE = os.path.expanduser("~/.hermes/memory/myelinated.json")
 DEFAULT_BUDGET = 2200
 SECONDS_PER_DAY = 86400.0
@@ -231,6 +231,11 @@ class Memory:
     last_access: float = 0.0
     access_count: int = 0
     score: float = INITIAL_SCORE
+    # D1: ``score`` is the strength *as of* ``score_at``. Decay is a pure function of
+    # the time between ``score_at`` and ``now`` (see ``MyelinatedMemory.strength``),
+    # so realising a memory twice at the same instant is a no-op and a session
+    # boundary can never compound it.
+    score_at: float = 0.0
     protected: bool = False
     cluster: Optional[str] = None
     tier: str = "active"
@@ -238,7 +243,12 @@ class Memory:
     superseded_by: Optional[str] = None
 
     def days_dormant(self, now: float) -> float:
+        """Time since the memory was last used (informational; decay uses score_at)."""
         return max(0.0, (now - self.last_access) / SECONDS_PER_DAY)
+
+    def days_since_realized(self, now: float) -> float:
+        """Dormancy that has not been folded into ``score`` yet (D1)."""
+        return max(0.0, (now - self.score_at) / SECONDS_PER_DAY)
 
 
 @dataclass
@@ -264,6 +274,7 @@ class MyelinatedMemory:
         similarity: bool = True,
         knapsack: bool = True,
         stale_retirement: bool = True,
+        auto_supersede: bool = True,
     ):
         # ``in_memory=True`` keeps the engine entirely in RAM and never reads or
         # writes the user store. The benchmark harness embeds it this way.
@@ -272,6 +283,11 @@ class MyelinatedMemory:
         self.similarity = similarity
         self.knapsack = knapsack
         self.stale_retirement = stale_retirement
+        # D14/R5b: an incoming memory that is >= DUPLICATE_JACCARD similar to a live one
+        # but is not the same token set is an *update* - it is stored and the older
+        # wording is retired, instead of the new text being silently absorbed. Its own
+        # switch so a future ablation arm can attribute it (BM-002).
+        self.auto_supersede = auto_supersede
 
         self.memories: Dict[str, Memory] = {}
         # Content never changes after creation, so these are cached by id.
@@ -290,6 +306,33 @@ class MyelinatedMemory:
 
         if self.path and os.path.exists(self.path):
             self.load()
+
+    # --------------------------------------------------------------- strength
+    def strength(self, mem: "Memory", now: float) -> float:
+        """The memory's current retrieval strength. Pure: it never mutates.
+
+        ``score`` is stored as of ``score_at``, so the decay accrued since then is
+        applied here exactly once however often it is asked for. That is what makes
+        D1 (compounding decay) impossible rather than merely fixed.
+        """
+        if mem.protected:
+            return PROTECTED_SCORE
+        return mem.score * math.exp(-decay_rate(mem.category) * mem.days_since_realized(now))
+
+    def realize(self, mem: "Memory", now: float) -> float:
+        """Fold the accrued decay into ``mem.score``. Idempotent at a fixed ``now``."""
+        mem.score = self.strength(mem, now)
+        mem.score_at = now
+        return mem.score
+
+    def _touch(self, mem: "Memory") -> None:
+        """The single funnel for "this memory moved": dirty set + index invalidation.
+
+        Every mutator goes through here, which is why ``retire()`` can no longer
+        leave a stale TF-IDF index behind (D9 / W0.7).
+        """
+        self._touched.add(mem.id)
+        self._sim_dirty = True
 
     # ------------------------------------------------------------------ util
     def _tok_of(self, mem: "Memory") -> frozenset:
@@ -377,14 +420,22 @@ class MyelinatedMemory:
         return [candidate for candidate, _ in ranked]
 
     def _find_duplicate(self, content: str) -> Optional[Memory]:
+        """The *live* memory this content restates, if any.
+
+        A retired memory is never returned. D13 was a correction being absorbed by
+        the dead entry it replaced: the new text was stored nowhere and recall came
+        back empty.
+        """
         exact_id = self._norm.get(normalize(content))
-        if exact_id is not None and exact_id in self.memories:
-            return self.memories[exact_id]
+        if exact_id is not None:
+            exact = self.memories.get(exact_id)
+            if exact is not None and not exact.retired:
+                return exact
         tokens = frozenset(_tokens(content))
         size = len(tokens)
         for candidate_id in self._candidates(self._sketch_for(content)):
             other = self.memories.get(candidate_id)
-            if other is None:
+            if other is None or other.retired:
                 continue
             other_tokens = self._tok_of(other)
             if not could_match(size, len(other_tokens), DUPLICATE_JACCARD):
@@ -392,6 +443,15 @@ class MyelinatedMemory:
             if jaccard(tokens, other_tokens) >= DUPLICATE_JACCARD:
                 return other
         return None
+
+    def _same_fact(self, content: str, other: "Memory") -> bool:
+        """True when the content has the same token *set* as ``other``.
+
+        A restatement (punctuation, whitespace, case) collapses into one entry as
+        before. A same-subject pair whose token set differs is an update, and an
+        update must keep its own text (D14).
+        """
+        return frozenset(_tokens(content)) == self._tok_of(other)
 
     # ------------------------------------------------------------------- api
     def add(
@@ -411,8 +471,8 @@ class MyelinatedMemory:
 
         duplicate = self._find_duplicate(content)
         mem_id: str
-        if duplicate is not None:
-            # "dupes auto-collapse"
+        if duplicate is not None and self._same_fact(content, duplicate):
+            # "dupes auto-collapse": the same token set, so the existing entry wins.
             mem_id = duplicate.id
             self.access(duplicate.id, now=now)
             if protected and not duplicate.protected:
@@ -428,33 +488,44 @@ class MyelinatedMemory:
                 last_access=now,
                 access_count=0,
                 score=PROTECTED_SCORE if protected else INITIAL_SCORE,
+                score_at=now,
                 protected=bool(protected),
                 cluster=None,
             )
             mem.tier = tier_for(mem.score, mem.protected)
             self.memories[mem.id] = mem
             self._index_insert(mem)
-            self._touched.add(mem.id)
+            self._touch(mem)
             mem_id = mem.id
+            # An update (same subject, changed value) supersedes the older wording, so
+            # what recall surfaces is the correction and never the stale text.
+            if duplicate is not None and self.auto_supersede and self.stale_retirement:
+                self.retire(duplicate.id, superseded_by=mem_id)
 
         if supersedes and self.stale_retirement:
             self.retire(supersedes, superseded_by=mem_id)
         return mem_id
 
     def access(self, memory_id: str, now: Optional[float] = None) -> bool:
-        """Hebbian boost: strengthen a memory because it was used."""
+        """Hebbian boost: strengthen a memory because it was used.
+
+        The boost is applied to the *decayed* strength (D1). Decay and boost only
+        commute if this is done, otherwise one use would erase an arbitrarily long
+        dormancy.
+        """
         mem = self.memories.get(memory_id)
         if mem is None:
             return False
         now = self.clock() if now is None else now
+        current = self.realize(mem, now)
         if not mem.protected:
-            mem.score = mem.score + BOOST_ALPHA * (1.0 - mem.score)
+            mem.score = current + BOOST_ALPHA * (1.0 - current)
         else:
             mem.score = PROTECTED_SCORE
         mem.access_count += 1
         mem.last_access = now
         mem.tier = tier_for(mem.score, mem.protected)
-        self._touched.add(mem.id)
+        self._touch(mem)
         return True
 
     def reinforce(self, memory_ids: Iterable[str], now: Optional[float] = None) -> int:
@@ -475,16 +546,21 @@ class MyelinatedMemory:
         mem.retired = True
         if superseded_by:
             mem.superseded_by = superseded_by
-        self._touched.add(mem.id)
+        # D9: retiring changes which memories the similarity index should contain, so
+        # it invalidates it exactly like any other mutation.
+        self._touch(mem)
         return True
 
     def pin(self, memory_id: str) -> bool:
         mem = self.memories.get(memory_id)
-        if mem is None:
+        if mem is None or mem.retired:
+            # Pinning a retired memory would resurrect it as a hidden 1.0 instead of
+            # bringing it back, so refuse rather than pretend (D18).
             return False
         mem.protected = True
         mem.score = PROTECTED_SCORE
         mem.tier = tier_for(mem.score, True)
+        self._touch(mem)
         return True
 
     def get(self, memory_id: str) -> Optional[Memory]:
@@ -562,13 +638,12 @@ class MyelinatedMemory:
         now = self.clock() if now is None else now
         decayed = 0
         for mem in self.memories.values():
-            if mem.protected:
-                mem.score = PROTECTED_SCORE
-            elif not mem.retired:
-                days = mem.days_dormant(now)
-                if days > 0:
-                    mem.score = mem.score * math.exp(-decay_rate(mem.category) * days)
-                    decayed += 1
+            before = mem.score
+            # Folding at most the decay that has not been applied yet (D1): calling
+            # refresh() hourly, daily or once a week now gives the same score curve.
+            self.realize(mem, now)
+            if mem.score < before - 1e-12:
+                decayed += 1
             mem.tier = tier_for(mem.score, mem.protected)
 
         touched = [mem_id for mem_id in self._touched if mem_id in self.memories]
@@ -576,11 +651,13 @@ class MyelinatedMemory:
         merged = self._collapse_duplicates(touched)
         clusters = self._cluster(touched)
         pruned = self._prune(max_entries)
+        deficit = max(0, len(self.memories) - max_entries) if max_entries > 0 else 0
         return {
             "decayed": decayed,
             "merged": merged,
             "clusters": clusters,
             "pruned": pruned,
+            "prune_deficit": deficit,
             "total": len(self.memories),
         }
 
@@ -595,14 +672,17 @@ class MyelinatedMemory:
         target.tier = tier_for(target.score, target.protected)
         del self.memories[mem.id]
         self._index_remove(mem)
+        self._touch(target)
 
     def _collapse_duplicates(self, touched_ids: List[str]) -> int:
         merged = 0
         ordered = [self.memories[i] for i in touched_ids if i in self.memories]
         ordered.sort(key=lambda m: (-m.score, m.created))
         for mem in ordered:
-            if mem.id not in self.memories:
-                continue  # already merged away by an earlier pass
+            if mem.id not in self.memories or mem.retired:
+                # Already merged away by an earlier pass, or retired: a retired memory
+                # is never a merge candidate and never a merge winner (D13).
+                continue
             tokens = self._tok_of(mem)
             size = len(tokens)
             match = None
@@ -610,7 +690,7 @@ class MyelinatedMemory:
                 if other_id == mem.id:
                     continue
                 other = self.memories.get(other_id)
-                if other is None:
+                if other is None or other.retired:
                     continue
                 other_tokens = self._tok_of(other)
                 if not could_match(size, len(other_tokens), DUPLICATE_JACCARD):
@@ -620,11 +700,19 @@ class MyelinatedMemory:
                         match = other
             if match is None:
                 continue
-            # Keep the stronger entry and fold the weaker one into it.
-            if (mem.score, -mem.created) > (match.score, -match.created):
-                winner, loser = mem, match
+            if tokens == self._tok_of(match):
+                # A restatement: keep the stronger entry and fold the weaker into it.
+                if (mem.score, -mem.created) > (match.score, -match.created):
+                    winner, loser = mem, match
+                else:
+                    winner, loser = match, mem
             else:
-                winner, loser = match, mem
+                # Same subject, changed wording (D14): the newer text is the update, so
+                # it must win the merge rather than be replaced by the older wording.
+                if mem.created >= match.created:
+                    winner, loser = mem, match
+                else:
+                    winner, loser = match, mem
             self._merge_into(winner, loser)
             merged += 1
         return merged
@@ -707,15 +795,18 @@ class MyelinatedMemory:
             return make_summary(mem.content, GIST_MAX_CHARS)
         return "[%s] (archived)" % mem.id
 
-    def _utility(self, mem: Memory, sims: Optional[Dict[str, float]]) -> float:
+    def _utility(self, mem: Memory, sims: Optional[Dict[str, float]], now: float,
+                 current: Optional[Dict[str, float]] = None) -> float:
+        score = current[mem.id] if current else self.strength(mem, now)
         sim = sims.get(mem.id, 0.0) if sims else 0.0
-        value = sim + PRIOR_WEIGHT * mem.score
+        value = sim + PRIOR_WEIGHT * score
         if mem.protected:
             value += PROTECTED_PRIOR
         return value
 
     def _recall_tiered(self, candidates: List[Memory], sims: Optional[Dict[str, float]],
-                       budget: int) -> RecallResult:
+                       budget: int, now: float,
+                       current: Optional[Dict[str, float]] = None) -> RecallResult:
         """The specification's behaviour: walk the priority order, render at the
         highest tier that fits, fill until the budget is exhausted."""
         lines: List[str] = []
@@ -723,7 +814,8 @@ class MyelinatedMemory:
         tiers: Dict[str, int] = {}
         spent = 0
         for mem in candidates:
-            tier = tier_for(mem.score, mem.protected)
+            score = current[mem.id] if current else self.strength(mem, now)
+            tier = tier_for(score, mem.protected)
             mem.tier = tier
             for detail in TIER_DETAILS[tier]:
                 body = self.render(mem, detail)
@@ -738,14 +830,16 @@ class MyelinatedMemory:
                             chars=spent, budget=budget, similarity_used=sims is not None)
 
     def _recall_knapsack(self, candidates: List[Memory], sims: Optional[Dict[str, float]],
-                         budget: int) -> RecallResult:
+                         budget: int, now: float,
+                         current: Optional[Dict[str, float]] = None) -> RecallResult:
         """Greedy knapsack over (memory, detail) pairs by expected value per
         character, so a cheap summary can outrank an expensive full text."""
         scored: List[Tuple[float, str, str, int]] = []
         for mem in candidates:
-            tier = tier_for(mem.score, mem.protected)
+            score = current[mem.id] if current else self.strength(mem, now)
+            tier = tier_for(score, mem.protected)
             mem.tier = tier
-            utility = self._utility(mem, sims)
+            utility = self._utility(mem, sims, now, current)
             if utility <= 0.0:
                 continue
             for detail in TIER_DETAILS[tier]:
@@ -789,6 +883,10 @@ class MyelinatedMemory:
         now = self.clock() if now is None else now
         live = [m for m in self.memories.values() if not m.retired]
         excluded = len(self.memories) - len(live)
+        # Strength is a pure function of (score, score_at, category, now), so a query
+        # ranks and packs the current value instead of whatever the last refresh left
+        # behind (D1). Computed once per candidate and reused by both packers.
+        current = {m.id: self.strength(m, now) for m in live}
 
         want_similarity = self.similarity if use_similarity is None else use_similarity
         sims: Optional[Dict[str, float]] = None
@@ -798,18 +896,19 @@ class MyelinatedMemory:
         if sims is not None:
             live.sort(key=lambda m: (
                 not m.protected,
-                -(sims.get(m.id, 0.0) + PRIOR_WEIGHT * m.score),
-                -m.score,
+                -(sims.get(m.id, 0.0) + PRIOR_WEIGHT * current[m.id]),
+                -current[m.id],
                 m.id,
             ))
             pool = live[:RECALL_POOL]
-            result = (self._recall_knapsack(pool, sims, budget) if self.knapsack
-                      else self._recall_tiered(pool, sims, budget))
+            result = (self._recall_knapsack(pool, sims, budget, now, current) if self.knapsack
+                      else self._recall_tiered(pool, sims, budget, now, current))
         else:
-            live.sort(key=lambda m: (not m.protected, -m.score, -m.last_access, -m.created, m.id))
+            live.sort(key=lambda m: (not m.protected, -current[m.id], -m.last_access,
+                                     -m.created, m.id))
             pool = live[:RECALL_POOL]
-            result = (self._recall_knapsack(pool, None, budget) if self.knapsack
-                      else self._recall_tiered(pool, None, budget))
+            result = (self._recall_knapsack(pool, None, budget, now, current) if self.knapsack
+                      else self._recall_tiered(pool, None, budget, now, current))
         result.retired_excluded = excluded
         return result
 
@@ -852,6 +951,10 @@ class MyelinatedMemory:
             mem = Memory(**known)
             if not mem.summary:
                 mem.summary = make_summary(mem.content)
+            if not mem.score_at:
+                # A v2 file has no ``score_at``: its score was last realized at its last
+                # access (or its creation), so decay from there and never from 0.
+                mem.score_at = mem.last_access or mem.created or 0.0
             mem.tier = tier_for(mem.score, mem.protected)
             self.memories[mem.id] = mem
             self._index_insert(mem)

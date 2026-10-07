@@ -11,8 +11,8 @@
     "product": ["README.md", "docs/REMEDIATION.md", "SKILL.md"],
     "sales_marketing": []
   },
-  "heads_note": "Round 2: Sales & Marketing was mapped but had NO work; recorded rather than inventing activity, with a 2-analyst pod because the work was 3 tightly coupled files. Round 3 (this request): a review pod of 4 analysts was run in parallel, one per angle (engine internals, harness/statistics, product claims and interface drift, competitive/systems fairness), and every load-bearing finding was re-derived by the coordinator with its own probe before it entered the plan. Sales & Marketing now has real, non-invented work (W10: positioning, a choose-this-if table, and the skill's trigger description), so it is no longer an empty department. Round 3.5 (this request): an offline self-test pass with no API key re-ran every check, re-derived each live defect, and found six more (D13-D18); the ordered fix plan is docs/FIX-PLAN.md, the two engine-testable ones are registered in test_engine.py, and the pass changed no engine or harness behaviour. Round 4 (this request): three analyst pods (engine internals, the benchmark instrument, the front page) plus the coordinator's own re-derivation, which produced docs/ROUND4-DESIGN.md - the eighteen defects reduce to two root causes, and the measured decay coupling (archived 636 -> 0, +33% characters per memory) is why the engine and instrument fixes have to land together. The same request published the repository: the engine, the harness and the results were untracked until this push, so no front-page claim could be reproduced from the repository before it.",
-  "phase": "round-4-designed-and-published-awaiting-the-P0-fixes",
+  "heads_note": "Round 2: Sales & Marketing was mapped but had NO work; recorded rather than inventing activity, with a 2-analyst pod because the work was 3 tightly coupled files. Round 3 (this request): a review pod of 4 analysts was run in parallel, one per angle (engine internals, harness/statistics, product claims and interface drift, competitive/systems fairness), and every load-bearing finding was re-derived by the coordinator with its own probe before it entered the plan. Sales & Marketing now has real, non-invented work (W10: positioning, a choose-this-if table, and the skill's trigger description), so it is no longer an empty department. Round 3.5 (this request): an offline self-test pass with no API key re-ran every check, re-derived each live defect, and found six more (D13-D18); the ordered fix plan is docs/FIX-PLAN.md, the two engine-testable ones are registered in test_engine.py, and the pass changed no engine or harness behaviour. Round 4 (this request): three analyst pods (engine internals, the benchmark instrument, the front page) plus the coordinator's own re-derivation, which produced docs/ROUND4-DESIGN.md - the eighteen defects reduce to two root causes, and the measured decay coupling (archived 636 -> 0, +33% characters per memory) is why the engine and instrument fixes have to land together. The same request published the repository: the engine, the harness and the results were untracked until this push, so no front-page claim could be reproduced from the repository before it. Round 4 shipped (this request): the mechanism in docs/ROUND4-DESIGN.md and the instrument repairs landed as one change, the three allocator controls ran, and the attribution question the design posed is answered against the engine - M3k (BM25's ranking in the engine's own packer) leads the suite, so the budget win is allocation, not store. The LLM judge is no longer blocked: a free-tier Gemini key is integrated and verified live, though the quota ran out before any harness-level LLM-judged run finished. The mechanism shipped inside the existing arms rather than as the M12 arm the design proposed, and M11/M12 remain unbuilt.",
+  "phase": "round-4-shipped-and-measured: the mechanism and the instrument repairs landed; the decay claim, the ranking gap and the LLM-judged run stay open",
   "round3_plan": {
     "artifact": "docs/PLAN.md",
     "produced_by": "head of staff: intake -> 4 analyst pods in parallel -> coordinator re-verified every load-bearing claim -> plan",
@@ -98,7 +98,101 @@
     },
     "first_slice": "realize() + _touch/_ensure_index (~30 lines, testable with test_engine.py alone): realize() twice at the same now is a no-op, N daily realisations equal INITIAL_SCORE x exp(-rate x N) to 1e-9, and incremental index state equals a full rebuild after any add/access/retire/pin sequence",
     "landing_rule": "the whole mechanism ships as a labelled 11th arm (M12); the (score, score_at) migration is a labelled protocol change with a load() shim, and D13's change in stored counts is never compared across the change (BM-002 / BM-006)",
-    "implemented": false
+    "shipped_rules": [
+      "Rule 1 (D1): Memory carries score as of score_at; strength(mem, now) is pure and realize() folds in only the decay not yet applied, so it is idempotent at a fixed now and refresh frequency stops being semantic; SCHEMA_VERSION 3 with a load() shim setting score_at = last_access or created for v2 files",
+      "Rule 2 (D13/D14): one classifier over the >= 0.90 Jaccard region - an identical token set is a restatement and still collapses, a different token set is an update whose new text is stored while the superseded entry is retired with superseded_by set, with no signal from the caller; a retired memory is never a merge target; gated by auto_supersede=True so it can be attributed; pin() refuses a retired memory (D18) and refresh() reports prune_deficit",
+      "Rule 3 (D9): every mutator goes through one _touch funnel that marks the dirty set and the similarity index, so retire() and pin() can no longer leave a stale index behind"
+    ],
+    "instrument_shipped": [
+      "per-record judge_state (judged | skipped | errored) with task_success computed over judged queries only (D5/D16)",
+      "ranked_ids alongside used_ids, so ndcg and mrr score the arm's rank order and the packed order is reported beside it (D8); details and dropped_ids from the design were NOT built and nothing reads them",
+      "warm-only latency percentiles with p50/p95/p99 plus cold_ms (D2)",
+      "one leak column per staleness suite, the mixed column deleted (D3)",
+      "unmeasured criteria report NOT MEASURED instead of a phantom FAIL (D4)",
+      "the significance criterion requires BOTH flat arms (D6), and the %% literal is gone (D12)",
+      "report guard: only the full default run writes RESULTS.md and results/raw.json; a scoped run writes RESULTS-<tier>.md and raw-<tier>.json (D15)",
+      "decision rule version 3, in which the scale latency criterion is INFORMATIONAL because its sign is not reproducible between identical runs (121.9 vs 101.3 ms, then 108.1 vs 126.4 ms on the same seed) and its figures are the median of 3 timed passes",
+      "three allocator controls M3t, M3p and M3k (13 offline arms; engines.py's arm-count self-check moved from 10 to 13)",
+      "the Gemini judge: GeminiJudge on Google's OpenAI-compatible endpoint, default model gemini-3.8-flash (gemini-2.0-flash is retired and returns HTTP 404), 4.0 s per request pacing, retry with backoff on 429/502/503/504 honouring Retry-After, a JUDGE_MAX_CALLS budget of 400 that raises rather than scoring, counters for the report, and selection in which auto and oracle stay the offline oracle while llm, gemini and openai select a model judge"
+    ],
+    "measured": {
+      "command": "python3 benchmarks/run_bench.py (oracle judge, 33 scenarios, 206 queries, 10000-memory scale probe, decision rule version 3)",
+      "verdict": "4 of 6 scored criteria passed; 1 informational (scale latency); 0 not measured",
+      "failed": [
+        "decay alone: the hero M10 still leaks 1.000 with no retire signal",
+        "significantly better than BOTH flat baselines: M1 -0.005 p=1.000 and M2 +0.068 p=0.001"
+      ],
+      "hit_rate_moves": {
+        "M6_pure": "0.650 -> 0.680",
+        "M7": "0.796 -> 0.816",
+        "M8": "0.825 -> 0.835",
+        "M10_hero": "0.801 -> 0.830"
+      },
+      "chars_per_hit": {
+        "M8": "1589 -> 1572",
+        "M6": "2019 -> 1935",
+        "M10_hero": 1596
+      },
+      "locomo_hit_rate": {
+        "M3k": 0.717,
+        "M3p": 0.667,
+        "M3": 0.617,
+        "M4": 0.6,
+        "M8": 0.433,
+        "M7": 0.367,
+        "M1": 0.283,
+        "M2": 0.0,
+        "M6": 0.0
+      },
+      "stored_10k": {
+        "M6": 9998,
+        "M7": 9998,
+        "M8": 9998,
+        "M9": 10000,
+        "M10": 10000,
+        "reading": "the update path stores the newer wording instead of absorbing it, so the stored count is one of the numbers the classifier change moves"
+      },
+      "scale": {
+        "M8_ingest_s": 5.1,
+        "M8_refresh_total_s": 2.89,
+        "M8_p50_ms": 27.357,
+        "M8_p95_ms": 28.294,
+        "BM25_p95_ms": 43.11,
+        "note": "median of 3 timed passes; wall clock on a shared host"
+      },
+      "suites": {
+        "test_engine": "139 checks, no KNOWN DEFECT line",
+        "test_llm_judge": "60 assertions"
+      }
+    },
+    "attribution": "ANSWERED, against the engine. M3k (BM25's ranking packed by the engine's own value-per-char packer) leads the whole suite: hit rate 0.893 against the best engine arm M8's 0.835, 1296 characters per evidence hit against 1572, and 0.717 against 0.433 on LoCoMo. M3t (BM25 ranked, truncated with the previously-unused common.downgrade()) reproduces BM25 exactly (0.864 at 1343 vs 1336) and M3p sits between at 0.879 / 1317, so the ladder and plain truncation explain little and the packer is where the budget win lives. Per the design's pre-registered reading, the published budget-efficiency claim is about ALLOCATION, not the store, and the report now prints this next to the verdict (BM-007's question, answered).",
+    "acceptance": {
+      "met": [
+        "item 1: realize() is idempotent and N daily realisations equal INITIAL_SCORE x exp(-rate x N) for N = 1..30",
+        "item 2: incremental index state equals a full rebuild after any add/access/retire/pin sequence, and retire-then-restate stores and recalls the correction (D13)"
+      ],
+      "partly_met": [
+        "item 3: M8 measures 0.835 hit rate and 1572 chars per hit against the >= 0.825 / <= 1589 target, but the pre-registered hero misses it at 0.830 / 1596, and the 'unified configuration' the item names was never built as its own arm"
+      ],
+      "not_met": [
+        "item 4: scale p50 is 27.4 ms against <= 8 ms, and the postings-based candidate retrieval and its equivalence oracle were never built, so the top-10-identical gate has nothing to test",
+        "item 5: ingest 5.10 s and refresh 2.89 s per 10000 against < 1.0 s and < 0.1 s",
+        "item 6: decay-only leakage is still 1.000, and no retrieval floor was implemented"
+      ]
+    },
+    "deviations": [
+      "the mechanism shipped inside the existing arms as a labelled protocol change (SCHEMA_VERSION 3 plus the auto_supersede flag) instead of as an 11th arm M12, so 'does the unified store still add anything' has no arm of its own",
+      "M11 (engine cosine with PRIOR_WEIGHT = 0 on hold-out seeds) was never built, so the prior-weight question stays open on the front page",
+      "details and dropped_ids from the design's record shape were not built",
+      "the scale corpus still cannot supply 50 warm queries, so the latency percentiles remain thin"
+    ],
+    "still_open": [
+      "criterion 5 (decay alone) and criterion 7 (beat both flat baselines)",
+      "no harness-level LLM-judged run: the Gemini judge is integrated and verified live (two real calls returned an answer and a 1.0 grade; a real 429 produced nine backoff retries then a JudgeError counted as errored, never scored as a wrong answer) but the free-tier quota was exhausted during verification",
+      "the decay-only leak moved for M6 (1.000 -> 0.000, with hit_rate_decay_only 1.000) and M2, but not for M9/M10 - the opposite order to what Rule 2 predicted, on a suite of 3 scenarios with one query each, so it is a lead and not a result",
+      "BM-009's retrieval floor, BM-010's claims register, and the M11/M12 arms"
+    ],
+    "implemented": true
   },
   "published": {
     "remote": "https://github.com/TWS07-gif/myelinated-memory",
@@ -110,7 +204,7 @@
     "ci": "workflow run 37685998712 completed/success: 'offline checks (python 3.10)' and 'offline checks (python 3.11)' both success, 15 steps each",
     "verified": "working tree equals origin/main (0 uncommitted); all six badges return HTTP 200 image/svg+xml; GitHub's rendered README shows 2 markdown alerts, 7 images and 13 tables; zero broken links or unbalanced fences across every markdown file; docs/project-state.json parses; hero.svg is well-formed XML"
   },
-  "round2_measurement_status": "Round 2's tables reproduce exactly (4 of 7, M8 0.825, 1589 chars/hit) but four of its instruments are now known to be unsound: decay compounds, the reported p95 is the max of five queries, the headline leak column mixes 22 records (16 with no retire signal), and the budget comparison pits the engine's packer against truncating baselines. Decay figures from rounds 1-2 are superseded by W0.1.",
+  "round2_measurement_status": "Round 2's tables reproduce exactly (4 of 7, M8 0.825, 1589 chars/hit) but four of its instruments are now known to be unsound: decay compounds, the reported p95 is the max of five queries, the headline leak column mixes 22 records (16 with no retire signal), and the budget comparison pits the engine's packer against truncating baselines. Decay and tier figures from rounds 1-2 are superseded by W0.1, which shipped as Rule 1 of the round-4 mechanism: the compounding curve, the tier mix it produced and every number derived from them (including the R7 gist decision, taken because everything decayed to archived) describe code that no longer exists. Round 2's non-decay figures - hit rate, chars per hit, the retrieval gap - are reproduced by the round-4 run on the same tiers and seed.",
   "rounds": {
     "round1": {
       "command": "python3 benchmarks/run_bench.py (oracle judge, 27 scenarios, 200 queries)",
@@ -138,6 +232,24 @@
       "refresh_10k_s": 2.5,
       "leak_with_supersession": 0.0,
       "leak_decay_only": 1.0
+    },
+    "round4": {
+      "command": "python3 benchmarks/run_bench.py (oracle judge, 33 scenarios, 206 queries, 10000-memory scale probe, decision rule version 3)",
+      "verdict": "4 of 6 scored criteria passed (1 informational: scale latency; 0 not measured)",
+      "pure_hit_rate": 0.68,
+      "best_engine_arm": "M8 myelinated +knapsack",
+      "best_engine_hit_rate": 0.835,
+      "best_baseline_hit_rate": 0.874,
+      "hero_hit_rate": 0.83,
+      "best_engine_chars_per_hit": 1572,
+      "hero_chars_per_hit": 1596,
+      "flat_chars_per_hit": 1734,
+      "leak_with_supersession": 0.0,
+      "leak_decay_only": 1.0,
+      "attribution": "M3k (BM25 + the engine's packer) leads the suite at 0.893 hit rate, 1296 chars per hit and 0.717 on LoCoMo against M8's 0.835 / 1572 / 0.433: the budget win is the allocator, not the store",
+      "ingest_10k_s": 5.1,
+      "refresh_10k_s": 2.89,
+      "supersedes": "rounds 1-2 decay and tier figures (BM-006); the round-4 run reproduces the non-decay figures on the same tiers and seed"
     }
   },
   "open_items": [
@@ -145,46 +257,46 @@
       "id": "R8",
       "title": "Fix ingest cost",
       "status": "done_target_missed",
-      "result": "12.5s -> 4.4s per 10,000 memories (2.9x faster). Target was <1.0s; NOT met and reported as a miss.",
+      "result": "12.5s -> 4.4s per 10,000 memories (2.9x faster). Target was <1.0s; NOT met and reported as a miss. After the round-4 change: 5.10s ingest and 2.89s refresh per 10,000 for M8, as a median of 3 timed passes; the target is still missed and the figure is wall clock on a shared host.",
       "evidence": "cProfile before: jaccard 2,859,706 calls / 5.36s, could_match 8.24M calls. After: jaccard 735,455 calls. Cause: token-postings candidate scan replaced by a MinHash bottom-8 sketch index."
     },
     {
       "id": "STALE",
       "title": "Fix staleness",
       "status": "partially_done",
-      "result": "With an explicit retire signal the engine leaks 0.000 (was 1.000). With NO retire signal, decay alone still leaks 1.000 - the decay claim remains UNPROVEN.",
+      "result": "With an explicit retire signal the engine leaks 0.000 (was 1.000). With NO retire signal, decay alone still leaks 1.000 on the pre-registered hero - the decay claim remains UNPROVEN. After the round-4 mechanism one number moved: M6 pure measures leak 0.000 with hit_rate_decay_only 1.000, while M9/M10 stay at 1.000. That is the opposite order to what Rule 2 predicted, on a suite of 3 scenarios with one query each, so it is a lead to chase and not a result.",
       "evidence": "benchmarks/RESULTS.md 'Staleness: supersession vs decay alone'; two suites derived from one builder so they cannot drift."
     },
     {
       "id": "LLM",
       "title": "Add an LLM judge",
-      "status": "blocked_on_secret",
-      "result": "Judge implemented and its protocol verified end-to-end against a local OpenAI-protocol stub (22 assertions, no key needed). Real LLM-judged numbers still require OPENAI_API_KEY in Settings -> Environment.",
-      "evidence": "python3 benchmarks/test_llm_judge.py -> 'llm judge ok: 22 assertions'"
+      "status": "integrated_and_verified_live_full_run_pending",
+      "result": "No longer blocked. A free-tier Gemini key is integrated as a first-class judge, the protocol is verified against the local stub (60 assertions), and the live endpoint was verified: two real calls returned an answer and a 1.0 grade, and a real HTTP 429 produced nine backoff retries over 13.6s then a JudgeError that run_bench records as judge_state 'errored' and never scores as a wrong answer. What is still missing is a completed harness-level LLM-judged table, because the free-tier quota was exhausted during verification. The default model had to be corrected: gemini-2.0-flash returns HTTP 404 'no longer available, use models/gemini-3.8-flash'.",
+      "evidence": "python3 benchmarks/test_llm_judge.py -> 'llm judge ok: 60 assertions'; two live calls via benchmarks/judge.py -> describe() 'LLM judge (gemini, gemini-3.8-flash)', answer 'staging cluster', grade 1.0; a later call -> HTTP 429, counters retries 9, calls 0"
     },
     {
       "id": "R1",
       "title": "Query-aware recall in the engine",
       "status": "done",
-      "result": "hit rate 0.650 -> 0.796"
+      "result": "hit rate 0.650 -> 0.796 in round 2; the same arm measures 0.680 after the round-4 mechanism"
     },
     {
       "id": "R4R7",
       "title": "Value-per-char packing + content gist instead of id stub",
       "status": "done",
-      "result": "hit rate 0.796 -> 0.825; chars/hit 1651 -> 1589. R7 fixed the LoCoMo tier (0.100 -> 0.400 hit rate) by making archived memories readable."
+      "result": "hit rate 0.796 -> 0.825; chars/hit 1651 -> 1589. R7 fixed the LoCoMo tier (0.100 -> 0.400 hit rate) by making archived memories readable. After the round-4 change the same arm measures 0.835 hit rate, 1572 chars/hit and 0.433 on LoCoMo - the LoCoMo tier now favours the packer control M3k (0.717), which is the attribution result."
     },
     {
       "id": "R5",
       "title": "Supersession",
       "status": "done_not_an_advantage",
-      "result": "leak 1.000 -> 0.000 with a retire signal, but every baseline can do this by deleting, so it is not a myelination advantage."
+      "result": "leak 1.000 -> 0.000 with a retire signal, but every baseline can do this by deleting, so it is not a myelination advantage. Unchanged after the round-4 mechanism; M7/M8, which do not support retirement, still leak 1.000 against the same signal."
     },
     {
       "id": "R2",
       "title": "Utility-credit reinforcement",
       "status": "done_net_negative",
-      "result": "hit rate 0.825 -> 0.801, task success 0.553 -> 0.534. Rewards proximity, not causation."
+      "result": "hit rate 0.825 -> 0.801, task success 0.553 -> 0.534. Rewards proximity, not causation. Still net-negative after the round-4 mechanism: M10 0.830 against M9's 0.835."
     },
     {
       "id": "R3",
@@ -202,15 +314,50 @@
     {
       "id": "TEST-GAP",
       "title": "The engine has no automated checks",
-      "status": "reviewed_suite_proposed_not_implemented",
-      "result": "scripts/myelinate.py ends at sys.exit(main()) with zero assertions; common.py, metrics.py and run_bench.py have no __main__ either. The ~48 existing assertions test the harness only (stats 12, stub 5, judge 7, engines 2, test_llm_judge 22) plus synthetic.py's scenario validator. Four shipped defects live in the untested file: compounding decay, retire() not invalidating the similarity index, double tokenisation on add(), and a clustering pass whose output nothing reads.",
-      "evidence": "docs/TESTING.md 1-4 with the exact proposed assertions; three of them fail against today's code by design, because they document live defects"
+      "status": "done_engine_suite_green",
+      "result": "Closed: benchmarks/test_engine.py now runs 139 checks with exit 0 and no KNOWN DEFECT line, covering the score and decay arithmetic, tier thresholds, rendering caps, the budget guarantee on both recall paths, retired-memory exclusion, pinning, the D13/D14 split, persistence and store-path precedence, and the v2 score_at migration. It began as the review's proposed suite against a file that had no assertions at all: scripts/myelinate.py ended at sys.exit(main()) with zero assertions, and common.py, metrics.py and run_bench.py had no __main__ either. At that point the ~48 existing assertions tested the harness only (stats 12, stub 5, judge 7, engines 2, test_llm_judge 22) plus synthetic.py's scenario validator, and four shipped defects lived in the untested file: compounding decay, retire() not invalidating the similarity index, double tokenisation on add(), and a clustering pass whose output nothing reads. Three of those four are now repaired and asserted (the fourth is a cost item, W3); the registry is empty and the assertions that used to report a defect as LIVE now assert the fixed behaviour.",
+      "evidence": "python3 benchmarks/test_engine.py -> 'engine ok: 139 checks' with no KNOWN DEFECT line; docs/TESTING.md 1-4 holds the original proposed assertions, three of which failed against the pre-round-4 code by design because they documented live defects"
     },
     {
       "id": "R9",
       "title": "Cache the similarity index",
       "status": "not_started",
-      "note": "Query-aware recall is 115.8ms 'p95' at 10k vs BM25's 47.3ms in the current run; the pure engine is 10.5ms. The figure is the maximum of five queries and one of them pays a one-off index rebuild (probe: 69.5/15.5/14.5/14.4/13.9 ms), so W0.2 must stabilise the measurement before W2 claims an improvement."
+      "note": "The measurement was stabilised first, as required: the report now splits warm from cold recall (cold_ms) and the scale latency figure is the median of 3 timed passes rather than the maximum of five queries. It also became an INFORMATIONAL criterion, because two identical runs still flipped its sign. The remaining work is the engine's: query-aware recall measures p50 27.4ms / p95 28.3ms at 10k against BM25's 43.1ms p95, while the pure engine is much faster, so the claim needs the postings-based candidate path and its equivalence oracle before it can be made."
+    },
+    {
+      "id": "ATTRIB",
+      "title": "Attribute the budget win: store or allocator?",
+      "status": "answered_against_the_store",
+      "result": "The controls ran and the answer is the allocator, specifically the packer. M3k (BM25's ranking in the engine's own value-per-char packer) leads the suite at 0.893 hit rate / 1296 chars per hit / 0.717 LoCoMo, against the best engine arm M8's 0.835 / 1572 / 0.433; M3p (engine ladder) 0.879 / 1317 and M3t (full-text truncation) 0.864 / 1343 bracket BM25's own 0.864 / 1336. The report prints this next to the verdict, and the front-page wording is the remaining edit.",
+      "evidence": "benchmarks/RESULTS.md sections 'Allocator controls: is the win the store or the packer?' and 'Decision rule'"
+    },
+    {
+      "id": "M11M12",
+      "title": "The two arms the design proposed were never built",
+      "status": "open_deviation",
+      "result": "M11 (engine cosine with PRIOR_WEIGHT = 0 on hold-out seeds) and M12 (engine cosine with the unified mechanism) do not exist. The mechanism shipped inside the existing arms as a labelled protocol change (SCHEMA_VERSION 3 plus the auto_supersede flag), so 'does the unified store still add anything' has no arm of its own and the prior-weight sweep remains exploratory on the report's own queries.",
+      "evidence": "engines.ARM_ORDER and build_arms() contain M3t/M3p/M3k and no M11/M12; docs/ROUND4-DESIGN.md 0 records the deviation"
+    },
+    {
+      "id": "SIG",
+      "title": "The engine does not beat BOTH flat baselines",
+      "status": "open_failure",
+      "result": "Criterion 7 now requires both flat arms and fails: M1 flat/FIFO -0.005 (p=1.000) and M2 recency/LRU +0.068 (p=0.001). The old wording passed on M2 alone while M1 scored higher than the hero.",
+      "evidence": "benchmarks/RESULTS.md decision rule, row 7"
+    },
+    {
+      "id": "SCALE-CRIT",
+      "title": "The scale latency criterion cannot be scored on a single host",
+      "status": "informational_by_design",
+      "result": "Two back-to-back runs of the identical commit measured the hero at 121.9ms against BM25's 101.3ms (criterion FAILs) and then 108.1ms against 126.4ms (criterion PASSes). After moving to a median of 3 timed passes the per-pass spread was still up to 5x, so the criterion prints its figures and is excluded from the pass/fail count. A criterion whose sign is not reproducible cannot decide a verdict.",
+      "evidence": "benchmarks/RESULTS.md decision rule, the INFORMATIONAL row, plus recall_p95_passes_ms in benchmarks/results/raw.json"
+    },
+    {
+      "id": "DECAY-LEAD",
+      "title": "M6's decay-only leak moved; M9/M10's did not",
+      "status": "open_question",
+      "result": "After the mechanism, leak_decay_only is 0.000 for M6 pure (with hit_rate_decay_only 1.000) and M2, and 1.000 for M9/M10 - the arms that actually carry the classifier. Rule 2 predicted the opposite. The suite is 3 scenarios with one query each, so the leak can only take {0, 1/3, 2/3, 1}: raise the power before drawing anything from it, and note that BM-009's retrieval floor was never implemented.",
+      "evidence": "benchmarks/RESULTS.md section 'Staleness: supersession vs decay alone'"
     }
   ],
   "board_meetings": [
@@ -273,7 +420,8 @@
         "product": "A silently different decay curve with unchanged numbers is exactly how a benchmark loses credibility."
       },
       "verdict_proposed": "Fix it, label it, re-measure every decay-dependent table, and mark rounds 1-2 decay figures superseded. No silent arithmetic fix.",
-      "status": "proposed_pending_ratification"
+      "status": "implemented_pending_formal_ratification",
+      "outcome": "Done as proposed: Rule 1 shipped (score as of score_at, idempotent realize(), SCHEMA_VERSION 3 with a v2 shim), every decay-dependent table was re-measured in the same change, and rounds 1-2 decay and tier figures are marked superseded here and in docs/ROUND4-DESIGN.md 0."
     },
     {
       "id": "BM-007",
@@ -285,7 +433,8 @@
         "engineering": "The control is cheap - common.downgrade() already exists and has no callers."
       },
       "verdict_proposed": "Run the control arm (BM25 ranked, packed by the engine's allocator) first; if it matches M8, restate the win as allocation rather than store quality.",
-      "status": "proposed_pending_ratification"
+      "status": "implemented_pending_formal_ratification",
+      "outcome": "Run, and it did not merely match M8: M3k leads every arm in the suite (0.893 hit rate, 1296 chars per hit, 0.717 LoCoMo against M8's 0.835 / 1572 / 0.433). The report now prints the attribution next to the verdict, so the budget-efficiency claim reads as allocation; the front page's wording is the remaining edit."
     },
     {
       "id": "BM-008",
@@ -296,7 +445,8 @@
         "product": "Report both and require both."
       },
       "verdict_proposed": "The criterion requires BOTH flat arms to be beaten; both diffs and p-values are printed. Today the PASS is attributed to M2 while M1 flat/FIFO scored higher than the hero (0.558 vs 0.534, p=0.625).",
-      "status": "proposed_pending_ratification"
+      "status": "implemented_in_rule_version_3_pending_formal_ratification",
+      "outcome": "Implemented: the criterion requires both flat arms and prints both diffs and p-values. It now FAILs - M1 -0.005 p=1.000, M2 +0.068 p=0.001 - which is the honest reading this ruling asked for."
     },
     {
       "id": "BM-009",
@@ -308,7 +458,8 @@
         "product": "An unearnable claim should be retired, not decorated."
       },
       "verdict_proposed": "Gate every leak criterion on a retrieval floor (hit_rate_decay_only >= 0.9 x flat) and assert M0 fails it; if decay-only leak is still above 0.5 after the arithmetic fix, formally retire the 'decay retires stale facts' claim and ship contradiction-detection (auto-retire on a conflicting same-subject update) as the labelled capability instead. BM-003 said a supersession win is never a decay win; this adds the converse.",
-      "status": "proposed_pending_ratification"
+      "status": "proposed_not_implemented",
+      "outcome": "Not implemented: criterion 5 is still the plain 0.20 leak threshold on the pre-registered hero and no retrieval floor exists. The arithmetic fix and the auto-supersede update class both shipped, and the latter is the capability this ruling named, but the criterion itself is unchanged, so it FAILs (hero leak 1.000). New evidence that bears on the ruling: M6 pure now measures leak 0.000 with hit_rate_decay_only 1.000 while M9/M10 leak 1.000, so the negative controls no longer fail the way this ruling expected and the suite's power (3 scenarios, one query each) is the binding limit."
     },
     {
       "id": "BM-010",
@@ -319,7 +470,8 @@
         "research": "Task success is judged by an evidence-containment oracle; the top two arms differ by 0.010 (TF-IDF 0.563 vs 0.553), which is smaller than any plausible judge noise."
       },
       "verdict_proposed": "No claim ships without a supporting row in benchmarks/RESULTS.md; task-success claims are blocked until a language model judges. The 'fastest recall in the suite' wording is removed (a flat store answers in 0.60 ms p95).",
-      "status": "proposed_pending_ratification"
+      "status": "partly_honoured_pending_formal_ratification",
+      "outcome": "The report now prints the attribution finding, the judge ledger and the unmeasured/informational criteria instead of leaving them to be inferred, and the 'fastest recall' wording stays removed. Task-success claims remain blocked - no harness-level LLM-judged run has completed - and the ranking-gap sentence on the front page still needs the attribution rewording."
     }
   ],
   "verification_trace": [
@@ -351,22 +503,26 @@
     {
       "claim": "The LLM judge protocol works without an API key",
       "evidence": "python3 benchmarks/test_llm_judge.py -> 'llm judge ok: 22 assertions' covering request shape, JSON parsing, caching, HTTP-500 error handling and judge selection",
-      "tool": "run_terminal_command"
+      "tool": "run_terminal_command",
+      "note": "Pre-round-4 revision. The same suite is now 60 assertions and also covers the Gemini provider, the pacing, the backoff and the call budget without a key. See the live-verification entry below."
     },
     {
       "claim": "No LLM API key is available, so real LLM-judged numbers cannot be produced here",
       "evidence": "freebuff-env list returned files:{}",
-      "tool": "freebuff-env list"
+      "tool": "freebuff-env list",
+      "note": "Superseded: a free-tier GEMINI_KEY now exists in this workspace, the Gemini judge is integrated and was verified live, and the only thing still missing is a completed harness-level LLM-judged run (the free-tier quota was exhausted during that verification)."
     },
     {
       "claim": "The configured engine closes the retrieval gap to within 4.9 hit-rate points",
       "evidence": "benchmarks/RESULTS.md decision rule: 'Best measured engine configuration reaches within 5 hit-rate points of the best semantic arm - M8 at 0.825, M4 TF-IDF leads by -0.049'",
-      "tool": "python3 benchmarks/run_bench.py"
+      "tool": "python3 benchmarks/run_bench.py",
+      "note": "Pre-round-4 revision. The criterion now reads 'best baseline' and measures M8 at 0.835 against M4's 0.874, a 0.039 gap - and the controls show that gap is an ordering deficit, not a store one, because M3k on BM25's own ranking scores 0.893."
     },
     {
       "claim": "Decay alone does not retire stale facts",
       "evidence": "benchmarks/RESULTS.md staleness table: leak_decay_only = 1.000 for M7/M8/M9/M10 and for flat/FIFO and BM25; M6 pure shows 0.000 only because it retrieves nothing (hit_rate_decay_only 0.000)",
-      "tool": "python3 benchmarks/run_bench.py"
+      "tool": "python3 benchmarks/run_bench.py",
+      "note": "Pre-round-4 revision. Still true for M9/M10, but M6's reading changed after the mechanism - hit_rate_decay_only is now 1.000 with the same 0.000 leak, so that explanation no longer holds. See the trace entry on M6/M2 below."
     },
     {
       "claim": "The decay path compounds: refresh() applies exp(-rate x days_since_last_access) every session while last_access does not advance",
@@ -396,7 +552,8 @@
     {
       "claim": "The engine has no automated check, and the metric definitions and decision rule are untested too",
       "evidence": "Read every module: scripts/myelinate.py ends at sys.exit(main()) with no assertions; benchmarks/common.py ends at arm_size(); metrics.py ends at _cell(); run_bench.py ends at main(). stats.py (~12 asserts), judge.py (7), engines.py (2), stub_llm.py (5), test_llm_judge.py (22) and synthetic.py's scenario validator are the whole suite, and none of them instantiates the engine.",
-      "tool": "file inspection with read_files (no terminal available in this session; nothing was executed)"
+      "tool": "file inspection with read_files (no terminal available in this session; nothing was executed)",
+      "note": "Pre-round-4 revision. The engine suite exists now (139 checks); see the trace entry naming it below."
     },
     {
       "claim": "Almost nothing in the engine has been tuned; PRIOR_WEIGHT is the hand-set value that visibly costs ranking quality",
@@ -404,7 +561,7 @@
       "tool": "file inspection with read_files + committed benchmarks/RESULTS.md (no terminal in this session)"
     },
     {
-      "claim": "The engine now has a regression suite and it is green: 69 checks, with the two live defects registered rather than failing the run",
+      "claim": "The engine now has a regression suite and it is green: 69 checks, with the two live defects registered rather than failing the run (superseded: 139 checks, no registry entries, after round 4)",
       "evidence": "python3 benchmarks/test_engine.py -> 'engine ok: 69 checks' + 'KNOWN DEFECT W0.1 decay compounds (rate x d(d+1)/2 instead of rate x d)' + 'KNOWN DEFECT W0.7 retire() does not invalidate the similarity index'; exit code 0. The registry asserts each defect's signature, so an unrelated code change is reported rather than silently passing.",
       "tool": "python3 benchmarks/test_engine.py via run_terminal_command"
     },
@@ -416,7 +573,8 @@
     {
       "claim": "Every offline check passes today, and the engine suite is green with four registered defects",
       "evidence": "stats, engines, judge, stub_llm, synthetic, test_llm_judge, test_engine all exit 0; py_compile clean. test_engine prints 'engine ok: 69 checks' plus KNOWN DEFECT W0.1, W0.7, D13, D14.",
-      "tool": "run_terminal_command (the full offline battery)"
+      "tool": "run_terminal_command (the full offline battery)",
+      "note": "Pre-round-4 revision: 69 checks with four registry entries. The same battery now reports 139 checks and no registry entries."
     },
     {
       "claim": "A scoped benchmark run overwrites the committed report with a partial one",
@@ -452,6 +610,46 @@
       "claim": "The pushed revision is the verified one",
       "evidence": "git status -sb: 'main...origin/main' with 0 uncommitted changes; python3 benchmarks/test_engine.py at that revision exits 0 with 69 checks and four KNOWN DEFECT lines; every command the CI workflow runs was executed locally first and exits 0.",
       "tool": "git status + the offline battery via run_terminal_command"
+    },
+    {
+      "claim": "The three rules shipped together and the engine suite now covers them: 139 checks, no registered defect",
+      "evidence": "python3 benchmarks/test_engine.py -> 'engine ok: 139 checks', exit 0, no KNOWN DEFECT line. The assertions include idempotent realize() at a fixed now, per-day decay for N = 1..30, incremental index state equal to a full rebuild after retire/pin, the update path with a fixture asserted to sit exactly at Jaccard 0.900, a correction after a retire, re-asserting retired text, pin() refusing a retired memory, prune_deficit and the v2 score_at migration.",
+      "tool": "python3 benchmarks/test_engine.py"
+    },
+    {
+      "claim": "The attribution question is answered against the engine: the budget win is the packer, not the store",
+      "evidence": "benchmarks/RESULTS.md 'Allocator controls' and the verdict paragraph: M3k 0.893 hit rate / 1296 chars per hit / 0.717 LoCoMo against M8's 0.835 / 1572 / 0.433, M3p 0.879 / 1317, M3t 0.864 / 1343 against BM25's 0.864 / 1336",
+      "tool": "python3 benchmarks/run_bench.py"
+    },
+    {
+      "claim": "The decay-only leak moved for M6 and M2 but not for M9/M10, which is the opposite order to what Rule 2 predicted",
+      "evidence": "benchmarks/RESULTS.md staleness table: leak_decay_only 0.000 for M6 (hit_rate_decay_only 1.000) and M2 (hit_rate_decay_only 0.000), 1.000 for M9 and M10; 3 scenarios with one query each",
+      "tool": "python3 benchmarks/run_bench.py"
+    },
+    {
+      "claim": "The verdict is reproducible after the rule change",
+      "evidence": "two consecutive full default runs of the identical commit both report '4 of 6 scored criteria passed - 1 row informational (printed, not scored) and 0 not measured', where the criterion set before the fix flipped between 4 of 7 and 5 of 7 on the same code",
+      "tool": "python3 benchmarks/run_bench.py, run twice via run_terminal_command"
+    },
+    {
+      "claim": "A scoped run can no longer clobber the committed artefacts",
+      "evidence": "after 'run_bench.py --tier staleness --skip-scale' the sha1 of benchmarks/RESULTS.md and of benchmarks/results/raw.json were both unchanged, and benchmarks/RESULTS-staleness.md plus benchmarks/results/raw-staleness.json were written instead; the full default run still writes both committed paths",
+      "tool": "sha1sum before and after via run_terminal_command"
+    },
+    {
+      "claim": "The scale latency criterion cannot be scored on this host",
+      "evidence": "two identical runs, same seed: hero 121.9ms vs BM25 101.3ms (FAIL) and then 108.1ms vs 126.4ms (PASS). After moving to a median of 3 timed passes the per-pass spreads were still up to 5x (M3 [62.7, 36.4, 43.1], M10 [104.7, 26.7, 40.4]), so the criterion reports INFORMATIONAL and is excluded from the pass/fail count, with the per-pass values kept in raw.json.",
+      "tool": "python3 benchmarks/run_bench.py + benchmarks/results/raw.json"
+    },
+    {
+      "claim": "The Gemini judge works against the live API, and its rate-limit guard holds under a real 429",
+      "evidence": "two real calls: answer() returned 'staging cluster' and grade() returned 1.0 for a correct answer, with describe() 'LLM judge (gemini, gemini-3.8-flash)'; a later call returned HTTP 429 and the judge made nine backoff retries over 13.6s of waiting before raising JudgeError, which run_bench records as judge_state 'errored' and never scores as a wrong answer. The first default model, gemini-2.0-flash, returned HTTP 404 'no longer available, use models/gemini-3.8-flash', so the default was corrected and is no longer hard-coded in the tests.",
+      "tool": "python3 via run_terminal_command against the live endpoint"
+    },
+    {
+      "claim": "No harness-level LLM-judged table exists yet",
+      "evidence": "the free-tier quota was exhausted during verification: every subsequent call returned HTTP 429 'Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests'. The judge protocol is verified live and against the local stub (60 assertions); the judged numbers are not.",
+      "tool": "python3 via run_terminal_command"
     }
   ],
   "artifacts": [

@@ -151,6 +151,12 @@ class Recall:
     """What an arm put into the context budget for one query."""
     text: str
     used_ids: List[str] = field(default_factory=list)
+    # The arm's own rank order BEFORE packing. An arm that reorders while
+    # packing (the engine's value-per-character knapsack does) must report the
+    # order it ranked in, or nDCG and MRR silently score the allocator as if it
+    # were the retriever (defect D8). Arms that do not distinguish the two
+    # orders leave this empty and the replay records ``used_ids`` instead.
+    ranked_ids: List[str] = field(default_factory=list)
     latency_ms: float = 0.0
     chars: int = 0
     budget: int = DEFAULT_BUDGET
@@ -250,6 +256,7 @@ def replay(scenario: Scenario, arm: Arm, budget: int = DEFAULT_BUDGET,
     cursor = 0
     last_day = None
 
+    first_recall = True
     for query in scenario.queries:
         q_day = float(query.session)
         while cursor < len(events) and events[cursor].day <= q_day:
@@ -286,6 +293,13 @@ def replay(scenario: Scenario, arm: Arm, budget: int = DEFAULT_BUDGET,
             "evidence_ids": list(query.evidence_ids),
             "stale_ids": list(query.stale_ids),
             "used_ids": list(result.used_ids),
+            # Rank order as reported by the arm; falls back to the packing order
+            # for arms that do not distinguish them.
+            "ranked_ids": list(result.ranked_ids) or list(result.used_ids),
+            # True for the first recall of this scenario, which is the one that
+            # pays any lazy index build. Latency percentiles are computed over
+            # the warm samples only (defect D2).
+            "cold": first_recall,
             "context": result.text,
             "chars": result.chars,
             "budget": result.budget,
@@ -295,6 +309,7 @@ def replay(scenario: Scenario, arm: Arm, budget: int = DEFAULT_BUDGET,
         if on_result is not None:
             on_result(arm, query, result, record)
         records.append(record)
+        first_recall = False
 
     return records
 

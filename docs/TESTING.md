@@ -10,7 +10,10 @@ changed by the review itself.
    `sys.exit(main())`. Every real defect found in this project — compounding
    decay, the similarity index not invalidated by `retire()`, double
    tokenisation on `add()`, a write-only cluster pass on the refresh hot path —
-   lives in the one file nothing tests.
+   lives in the one file nothing tests. **Round-4 status:** closed —
+   `benchmarks/test_engine.py` now covers the engine with 139 checks, and the
+   decay, index-invalidation and update/restatement defects are asserted for real
+   rather than registered as known.
 2. **The metric definitions are untested.** `benchmarks/metrics.py` has no
    `__main__`; the numbers that decide the verdict (hit rate, nDCG, MRR,
    `stale_leak`, `chars_per_hit`) have never been checked against a
@@ -37,8 +40,8 @@ changed by the review itself.
 | `benchmarks/engines.py` | **yes**, 2 asserts | 10 offline arms are built; each has `recall_ms` |
 | `benchmarks/judge.py` | **yes**, 7 asserts | oracle extracts a line from a context; `contains` and `exact` grading; empty context → empty answer; `make_judge("oracle")` mode; `describe()` refuses the LLM label |
 | `benchmarks/stub_llm.py` | **yes**, 5 asserts | the stub's request→response mapping: answering, forced 0 score, HTTP 500 |
-| `benchmarks/test_llm_judge.py` | **yes**, 22 assertions | the OpenAI-protocol path end to end against the stub: request shape, parsing, cache, HTTP-500 error, judge selection, descriptions |
-| `benchmarks/test_engine.py` | **yes**, 69 checks | the engine: bounded diminishing boost, pinned memories, tier thresholds, rendering caps, the budget guarantee on both recall paths, retired-memory exclusion, duplicate collapsing, persistence and store-path precedence — plus a `known_defect()` registry that reports tracked defects instead of failing |
+| `benchmarks/test_llm_judge.py` | **yes**, 60 assertions (22 at the time of this review) | the OpenAI- **and** Gemini-protocol paths end to end against the local stub: request shape, parsing, cache, HTTP-500 error, judge selection and descriptions, plus round-4 coverage for the free-tier pace, the 429 backoff, `Retry-After` and the `JUDGE_MAX_CALLS` budget |
+| `benchmarks/test_engine.py` | **yes**, 139 checks (69 at the time of this review) | the engine: bounded diminishing boost, pinned memories, tier thresholds, rendering caps, the budget guarantee on both recall paths, retired-memory exclusion, duplicate collapsing, persistence and store-path precedence — plus a `known_defect()` registry that is now **empty**: the four defects it used to report are fixed and asserted, and the mechanism stays so a new tracked defect can be registered |
 | `benchmarks/synthetic.py` | **yes**, a validator over every scenario | unique ids and event ordering; evidence/stale exist and precede the query; the staleness suites retire (or provably do not retire) their stale ids; filler > 200 so the budget binds; stale/evidence Jaccard < 0.9 so collapsing cannot be mistaken for staleness handling; **globally unique query ids** (a collision would silently corrupt paired statistics) |
 | `benchmarks/public_locomo.py` | prints counts, **asserts nothing** | the LoCoMo conversion that defines that tier's ground truth is unverified |
 
@@ -50,14 +53,17 @@ python3 benchmarks/engines.py          # engines ok
 python3 benchmarks/judge.py            # judge ok
 python3 benchmarks/stub_llm.py         # stub ok
 python3 benchmarks/synthetic.py        # synthetic ok: 14 scenarios, 33 queries, ...
-python3 benchmarks/test_llm_judge.py   # llm judge ok: 22 assertions
-python3 benchmarks/run_bench.py        # writes RESULTS.md + results/raw.json
+python3 benchmarks/test_llm_judge.py   # llm judge ok: 60 assertions
+python3 benchmarks/run_bench.py        # full run only: writes RESULTS.md + results/raw.json
 ```
 
-So roughly **48 assertions, all of them about the harness**. The best check in
-the repo is `synthetic.py`'s validator, and it prevents a class of failure
+So the harness assertions have grown well past the roughly **48** this review
+counted — 60 of them now live in `test_llm_judge.py` alone — and the engine,
+which had none, is covered by **139 checks**. The best check in the repo is still
+`synthetic.py`'s validator, and it prevents a class of failure
 (query-id collisions) that would have quietly merged two different questions in
-the paired statistics. Nothing in that list touches the engine.
+the paired statistics. That list now includes the engine, which is the change this
+review asked for.
 
 ---
 
@@ -135,9 +141,12 @@ the paired statistics. Nothing in that list touches the engine.
 Plain Python, no pytest, sibling imports — the same style as
 `benchmarks/test_llm_judge.py`, so each file runs as a script.
 
-**Status: the engine suite is implemented and green.**
-`benchmarks/test_engine.py` landed with **69 checks** and is listed in §1. The
-metric, verdict and harness suites below are still W0.9–W0.10.
+**Status: the engine suite is implemented, green, and carries no known-defect
+lines.** `benchmarks/test_engine.py` reports **139 checks** (69 at the time of
+this review) and is listed in §1; its `known_defect()` registry is **empty**,
+because the four defects it used to report (W0.1, W0.7, D13, D14) are fixed and
+asserted. The metric, verdict and harness suites below are still W0.9–W0.10, so
+several of the cases they describe are now fixed in code but unasserted by a test.
 
 Two entries in the engine list below describe behaviour that is currently
 **wrong**. Rather than commit assertions that fail from the start (a red test
@@ -145,9 +154,8 @@ suite is ignored within a week), the suite registers them with
 `known_defect(tracking, description, present)`:
 
 ```
-engine ok: 69 checks
-  KNOWN DEFECT W0.1 decay compounds (rate x d(d+1)/2 instead of rate x d)
-  KNOWN DEFECT W0.7 retire() does not invalidate the similarity index
+engine ok: 139 checks
+  # and no KNOWN DEFECT line: W0.1, W0.7, D13 and D14 are asserted for real now
 ```
 
 The registration asserts each defect's **signature**, not the wrong value: if
@@ -155,13 +163,17 @@ the code changes for an unrelated reason the registry notices, and on the day
 the fix lands the line flips to `RESOLVED … remove it from this registry and
 assert the fix instead`. So the suite is green before and after every fix, and a
 tracked defect cannot be silently forgotten — which is how the compounding decay
-survived two rounds of reports.
+survived two rounds of reports. **Round 4 is the day of the fixes:** the registry
+has zero entries, and the four signatures it used to report are asserted directly
+(per-day decay for N = 1..30 with a no-op re-realise, incremental similarity
+equal to a full rebuild after `retire`/`pin`, and the update-versus-restatement
+split at the 0.90 threshold).
 
 ### `benchmarks/test_engine.py`
 
 ```python
 from myelinate import MyelinatedMemory, INITIAL_SCORE, CATEGORY_DECAY_PER_DAY, GIST_MAX_CHARS
-# 1. decay is per-day, not compounded          <-- FAILS TODAY
+# 1. decay is per-day, not compounded          <-- asserted since round 4
 m = MyelinatedMemory(in_memory=True); t0 = 1700000000.0
 m.add("A fact worth remembering about deployment.", now=t0)
 mid = list(m.memories)[0]
@@ -177,7 +189,7 @@ for d in range(1, 31):
 # 6. budget invariant, both recall paths, with and without a query:
 #       result.chars <= budget  for budget in (0, 50, 500, 2200)
 # 7. retired memory never appears in used_ids; result.retired_excluded == 1
-# 8. retire() invalidates the similarity index            <-- FAILS TODAY
+# 8. retire() invalidates the similarity index            <-- asserted since round 4
 #       before = engine.similarity_scores("deploy target")
 #       engine.retire(old_id)
 #       assert old_id not in engine.similarity_scores("deploy target")
@@ -209,10 +221,12 @@ for d in range(1, 31):
 
 ```python
 # fake summaries only - no engine needed
-# 1. hero beats M2 but loses to M1 flat/FIFO  -> significance criterion must NOT pass  <-- FAILS TODAY
+# 1. hero beats M2 but loses to M1 flat/FIFO  -> significance criterion must NOT pass  <-- the rule does this since round 4
 # 2. scale rows empty (--skip-scale / tier run) -> latency criterion is NOT MEASURED
-#    and is excluded from the denominator            <-- FAILS TODAY
-# 3. a record with judge_skipped=True must not contribute to task_success <-- FAILS TODAY
+#    and is excluded from the denominator            <-- the rule does this since round 4
+#    (on a full run the scale criterion is INFORMATIONAL: its sign is not reproducible on this host)
+# 3. a record with judge_skipped=True must not contribute to task_success <-- the harness does this since round 4
+# The three cases are fixed in code; they are still not pinned by a committed fixture file.
 # 4. the hero is never swapped when another arm has a higher hit rate (BM-004 guard)
 ```
 
@@ -238,7 +252,7 @@ never instantiates the engine and never calls `verdict()`.
 
 | Constant | Value | Provenance |
 | :--- | :--- | :--- |
-| `CATEGORY_DECAY_PER_DAY` | identity .002, user/preference .010, general .030, task .050, ephemeral .100 | **hand-set** (`ASSUMPTION`); never swept — and currently applied through the compounding bug, so sweeping them now would fit the bug |
+| `CATEGORY_DECAY_PER_DAY` | identity .002, user/preference .010, general .030, task .050, ephemeral .100 | **hand-set** (`ASSUMPTION`); never swept. The compounding bug is fixed in round 4 (strength is derived from a stored `(score, score_at)` pair, so `refresh()` folds only the decay not yet applied), which means these rates can finally be swept against a correct decay curve instead of fitting the bug — sweep 6 is unblocked |
 | `INITIAL_SCORE` | 0.60 | hand-set, just above `ACTIVE_THRESHOLD` so new memories are visible |
 | `BOOST_ALPHA` | 0.35 | hand-set; diminishing returns via `s + α(1−s)` |
 | `ACTIVE_THRESHOLD` / `LATENT_THRESHOLD` | 0.5 / 0.1 | hand-set; these decide the tier mix, and therefore how much of each memory reaches the budget |
@@ -255,8 +269,11 @@ never instantiates the engine and never calls `verdict()`.
 
 ### Protocol for tuning (pre-registered)
 
-1. **Fix W0.1 first.** Tuning decay rates against a compounding implementation
-   fits the bug rather than the model.
+1. **Fix W0.1 first — done in round 4.** Tuning decay rates against a compounding
+   implementation fits the bug rather than the model; the decay path is now
+   derived and per-day, and a repair also makes `realize()` idempotent at a fixed
+   `now`, so a session that calls `refresh()` hourly and one that calls it daily
+   see the same curve.
 2. **One knob per arm.** A tuned value ships as its own labelled arm (M11, M12…),
    never folded into M8 — the BM-002 attribution rule.
 3. **Hold out seeds.** Tune on seeds 0–4, report on 5–9. Today there is **one**
@@ -297,9 +314,16 @@ it never writes `RESULTS.md`.
 | 0.50 | 0.553 | 0.811 | 0.593 | 1617 | 1.000 | 1.000 | 1.000 | 0.350 |
 | 1.00 | 0.539 | 0.738 | 0.569 | 1776 | 0.964 | 1.000 | 1.000 | 0.167 |
 
-**The internal control holds**: the 0.35 row reproduces M8's committed numbers
-exactly (0.825 / 0.606 / 1589 / LoCoMo 0.400), so the probe is measuring the same
-system the report measures. **And the committed value is the second-worst point
+**The internal control holds**: the 0.35 row reproduced M8's committed numbers
+exactly (0.825 / 0.606 / 1589 / LoCoMo 0.400) at the time of the sweep, so the
+probe was measuring the same system the report measured.
+
+**Round-4 caveat:** the numbers in this table are the round-3 measurements, taken
+before the decay fix and before the update/restatement split changed the store.
+The committed M8 row is now **0.835** hit rate, **0.639** nDCG@10 and **1572**
+characters per hit, so the control no longer reproduces it and the sweep must be
+re-run before any of it is quoted again — the conclusion (the prior is a cost to
+ranking) is the reason to re-run it, not to trust the old curve. **And the committed value is the second-worst point
 on the curve.** At 0.00 the same engine beats the best semantic arm on hit rate
 (0.893 vs 0.874), beats BM25 on chars/hit (1265 vs 1336) and on the LoCoMo tier
 (0.683 vs 0.617), and closes most of the nDCG deficit (0.672 vs BM25's 0.732).
@@ -328,10 +352,15 @@ producing a 55.6% figure that had to be withdrawn.
 ## 6. What to do with this review
 
 W0.8 (the engine regression suite) is **delivered** — `benchmarks/test_engine.py`,
-69 checks, green, with W0.1 and W0.7 registered as known defects. The remaining
-tests are **W0.9 (metric and verdict fixtures)** and **W0.10 (harness
-invariants)** in [PLAN.md](PLAN.md); the sweeps above are **W6** (seeds and
-power) and **R6** (auto-tune), with sweep 1 now partly executed by
+139 checks, green, with an **empty** known-defect registry because W0.1, W0.7,
+D13 and D14 are all fixed and asserted. The remaining tests are **W0.9 (metric
+and verdict fixtures)** and **W0.10 (harness invariants)** in [PLAN.md](PLAN.md),
+and round 4 makes them the most valuable open work in this review: the
+harness defects they were written to catch (one-of-two flat arms, unmeasured
+criteria scored, skipped judge calls scored) are now fixed in code but still
+pinned by no test. The scale latency criterion is reported as **INFORMATIONAL**
+for the same reason — two identical runs flipped its sign on this host. The sweeps
+above are **W6** (seeds and power) and **R6** (auto-tune), with sweep 1 now partly executed by
 `benchmarks/tune_probe.py` and its confirmatory run scheduled as the attribution
 control **W1.2**. None of them need a decision from the board — they are the
 cheapest way to stop the next arithmetic bug from reaching a published table.

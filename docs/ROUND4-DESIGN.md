@@ -1,7 +1,10 @@
 # Round 4 design — one mechanism, not twelve patches
 
-**Owner:** head of staff (orchestrator). **Status:** proposed; nothing here is implemented yet.
-**Changes no code.** Every number was produced by a command in §7.
+**Owner:** head of staff (orchestrator). **Status:** **shipped** — the three rules in §2 are in the
+engine and the instrument repairs in §4 are in the harness. See §0 for what was measured, what the
+design got right, and what is still open.
+**Changed no code when written.** Every number in §§1–7 was produced by a command in §7; §0 was added
+afterwards and cites [`benchmarks/RESULTS.md`](../benchmarks/RESULTS.md).
 
 The brief for this round was: *find a way the defects could be fixed or changed so that they work
 together, increasing the efficiency of the memory* — rather than as twelve independent repairs.
@@ -17,6 +20,87 @@ declared scope*, so every metric and every criterion has to guess. Fix the two c
 defects stop existing individually — and, critically, **the engine fix only becomes safe once the
 instrument can attribute it**, because the honest measurement in §3 shows the decay repair makes
 budget efficiency *worse* unless the tier policy moves with it.
+
+---
+
+## 0. Status after implementation (read this first)
+
+**Shipped, as one mechanism, inside the existing arms.** The three rules landed together:
+
+* **Rule 1 (D1).** `Memory` carries `score` **as of** `score_at`; `strength(mem, now)` is pure and
+  `realize(mem, now)` folds in only the decay not yet applied, so it is idempotent at a fixed `now`
+  and refreshing hourly, daily or weekly gives the same curve. `SCHEMA_VERSION` is 3, with a `load()`
+  shim that sets `score_at = last_access or created` for v2 files.
+* **Rule 2 (D13/D14).** One classifier splits the ≥0.90 region: an identical token set is a
+  *restatement* and still collapses, a different token set is an **update** — the new text is stored
+  and the superseded entry is retired with `superseded_by` set, with no signal from the caller. A
+  retired memory is never a merge target. It is gated by `auto_supersede=True` so it can be
+  attributed. `pin()` refuses a retired memory (D18) and `refresh()` reports `prune_deficit`.
+* **Rule 3 (D9).** Every mutator goes through one `_touch` funnel that marks the dirty set and the
+  similarity index, so `retire()` and `pin()` can no longer leave a stale index behind.
+
+**The instrument repairs from §4 landed too**, because the whole argument for them was that the
+engine fix is unattributable without them: a per-record `judge_state` ledger
+(`judged`/`skipped`/`errored`, with `task_success` over judged queries only — D5/D16); `ndcg`/`mrr`
+scored on the arm's **rank order** with the packed order reported beside it (D8); warm-only latency
+percentiles plus `cold_ms` (D2); one leak column per staleness suite with the mixed column deleted
+(D3); unmeasured criteria reporting **NOT MEASURED** instead of a phantom FAIL (D4); the significance
+criterion requiring **both** flat arms (D6); the `%%` literal gone (D12); and a report guard under
+which only the full default run writes `RESULTS.md` and `results/raw.json`, while a scoped run writes
+`RESULTS-<tier>.md` and `raw-<tier>.json` (D15). The decision rule is version 3. Two pieces of the
+record shape were **not** built: `details` and `dropped_ids` have no producer, and nothing reads them.
+
+**The attribution question in §4 has an answer, and it is uncomfortable.** The controls shipped
+(M3t, M3p, M3k; 13 offline arms, `engines.py`'s arm-count self-check moved from 10 to 13). On the
+current run **M3k — BM25's ranking packed by the engine's own value-per-char packer — leads the entire
+suite**: hit rate **0.893** against the best engine arm M8's **0.835**, **1296** characters per
+evidence hit against **1572**, and **0.717** against **0.433** on the LoCoMo tier. M3t (BM25 ranked,
+truncated with the previously-unused `common.downgrade()`) reproduces BM25 exactly (0.864 at 1343 vs
+1336), and M3p sits between at 0.879 / 1317 — so the *ladder* and plain *truncation* explain little and
+the **packer** is where the budget win lives. Per the pre-registered reading above: the published
+"budget efficiency" claim is about **allocation, not the store**, and the report now prints that next
+to the verdict instead of leaving it to be inferred from a table.
+
+**What the mechanism did and did not buy** (full default run, offline oracle judge, rule version 3):
+
+| | before | after |
+| :--- | ---: | ---: |
+| verdict | 4 of 7 (rule v1) | **4 of 6 scored** (1 informational, 0 not measured) |
+| M6 pure hit rate | 0.650 | **0.680** |
+| M8 hit rate / chars per hit | 0.825 / 1589 | **0.835 / 1572** |
+| M10 (hero) hit rate / chars per hit | 0.801 / 1652 | 0.830 / **1596** |
+| decay-only leak, hero M10 | 1.000 | **1.000 — criterion 5 still FAILs** |
+| stored entries at 10k | 9998 | **10000** for M9/M10 (updates are stored, not absorbed) |
+| engine suite | 69 checks + 4 `KNOWN DEFECT` lines | **139 checks, no defect lines** |
+
+Acceptance items **1 and 2 are met** — the suite asserts idempotent `realize()`, per-day decay for
+N = 1..30, incremental-equals-rebuild after any add/access/retire/pin sequence, and the
+retire-then-restate correction. Item **3 is only partly met**: M8 measures 0.835 / 1572 against the
+≥0.825 / ≤1589 target, but the pre-registered hero misses it at 0.830 / **1596**, and "the unified
+configuration" the item names was never built as its own arm. Items **4, 5 and 6 are not met**: scale
+p50 is 27.4 ms against ≤8 ms (and the postings-based candidate retrieval and its equivalence oracle
+were never built, so the "top-10 identical to the exhaustive scan" gate has nothing to test); ingest
+and refresh are 5.10 s / 2.89 s per 10k against <1 s / <0.1 s; and decay-only leakage is still 1.000
+because no retrieval floor was implemented. **M11 and M12 were never built**, so the prior-weight
+hold-out question and "does the unified store still add anything" remain open. The mechanism shipped
+inside the existing arms as a labelled protocol change (`SCHEMA_VERSION` 3 plus the `auto_supersede`
+flag) rather than as the 11th arm §5 proposed, which is a deviation from this design and is recorded
+as one.
+
+**One reading worth chasing, and not a claim.** On the decay-only suite the leak moved for **M6 pure**
+(1.000 → 0.000, with `hit_rate_decay_only` 1.000) and for **M2 LRU** (which retrieves nothing), while
+**M9/M10 stayed at 1.000** — the opposite order to what Rule 2 predicted, given that M9/M10 are the
+arms that carry it. Three scenarios with one query each cannot settle this (the leak can only take the
+values {0, ⅓, ⅔, 1}), so it is recorded as an open question.
+
+**Still open, in one place:** criterion 5 (decay alone) and criterion 7 (beat *both* flat baselines);
+the scale criterion, now **INFORMATIONAL** because two identical runs on this host flipped its sign
+(121.9 vs 101.3 ms, then 108.1 vs 126.4 ms, with per-pass spreads up to 5×) and a criterion whose sign
+is not reproducible cannot decide a verdict; BM-006 through BM-010 awaiting formal ratification rather
+than implementation; M11/M12; and the LLM-judged run — the Gemini judge is integrated and was verified
+live (two real calls returned an answer and a 1.0 grade, and a real 429 produced nine backoff retries
+then a counted `errored` rather than a scored zero), but the free-tier quota was exhausted during
+verification, so no harness-level LLM-judged table exists yet.
 
 ---
 
@@ -253,7 +337,9 @@ rows 1, 3, 5 and 6 move; rows 2, 4 and 7 do not.
 
 **Unproven without an API key.** The LLM-judged task success and the dense-embedding arm (M5) do not
 exist in any table, so no unification here can claim "answers more questions correctly". The judge
-*protocol* is verified against the local stub; the model's judgement is not.
+*protocol* is verified against the local stub (60 assertions) **and** against a live model since §0,
+but no full LLM-judged run has completed, so the *numbers* are still missing and the dense arm (M5)
+still has no key.
 
 ## 7. Reproduce
 

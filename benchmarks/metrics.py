@@ -25,9 +25,22 @@ def hit(record: Dict) -> float:
     return 1.0 if set(record.get("evidence_ids") or ()) & set(record.get("used_ids") or ()) else 0.0
 
 
-def reciprocal_rank(record: Dict) -> float:
+def _order(record: Dict, order: str = "ranked") -> List[str]:
+    """The ids a rank metric should read.
+
+    ``ranked`` is the arm's own order *before* packing, ``packed`` is what
+    actually reached the context. Arms that do not distinguish the two report
+    the same list for both. Scoring the packed order as retrieval quality is
+    defect D8: the allocator's reordering was being read as ranking skill.
+    """
+    if order == "packed":
+        return list(record.get("used_ids") or ())
+    return list(record.get("ranked_ids") or record.get("used_ids") or ())
+
+
+def reciprocal_rank(record: Dict, order: str = "ranked") -> float:
     evidence = set(record.get("evidence_ids") or ())
-    for position, mem_id in enumerate(record.get("used_ids") or (), start=1):
+    for position, mem_id in enumerate(_order(record, order), start=1):
         if mem_id in evidence:
             return 1.0 / position
     return 0.0
@@ -46,12 +59,12 @@ def _dcg(relevances: Sequence[float]) -> float:
     return sum(rel / math.log2(position + 2) for position, rel in enumerate(relevances))
 
 
-def ndcg(record: Dict, k: int = DEFAULT_K) -> Optional[float]:
+def ndcg(record: Dict, k: int = DEFAULT_K, order: str = "ranked") -> Optional[float]:
     """Normalised discounted gain over the arm's own rank order."""
     evidence = set(record.get("evidence_ids") or ())
     if not evidence:
         return None
-    used = list(record.get("used_ids") or ())[:k]
+    used = _order(record, order)[:k]
     relevances = [1.0 if mem_id in evidence else 0.0 for mem_id in used]
     ideal = [1.0] * min(len(evidence), k)
     ideal_gain = _dcg(ideal)
@@ -87,29 +100,51 @@ def _percentile(values: Sequence[float], q: float) -> float:
     return float(values[low] * (1.0 - frac) + values[high] * frac)
 
 
-def summarize(records: Sequence[Dict]) -> Dict[str, float]:
-    """Arm-level summary across every scored query."""
+def summarize(records: Sequence[Dict], judged_only: bool = True) -> Dict[str, float]:
+    """Arm-level summary across every scored query.
+
+    ``judged_only`` keeps a record the run never judged (a cost cap or a failed
+    call) out of ``task_success`` instead of averaging it in as a zero, and the
+    judged/skipped/errored counts are reported either way (defects D5/D16).
+    """
     scored = _with_evidence(records)
     stale_records = [r for r in records if r.get("stale_ids")]
+    judged = [r for r in records if r.get("judge_state", "judged") == "judged"]
     precisions = [evidence_precision(r) for r in scored]
-    latencies = [r.get("latency_ms", 0.0) for r in records]
     chars = [r.get("chars", 0) for r in records]
     budgets = [r.get("budget", 1) or 1 for r in records]
     hits = [hit(r) for r in scored]
+    # Warm latency only: the first recall of a scenario pays any lazy index
+    # build, and a single cold sample inside a five-sample "p95" was the whole
+    # of defect D2. Cold samples are reported separately.
+    warm = [r.get("latency_ms", 0.0) for r in records if not r.get("cold")]
+    cold = [r.get("latency_ms", 0.0) for r in records if r.get("cold")]
+    pool = judged if judged_only else records
     return {
         "queries": float(len(records)),
         "scored_queries": float(len(scored)),
-        # End-to-end: share of queries whose judged answer was correct.
-        "task_success": _mean([r.get("judge_score", 0.0) for r in records]),
+        "judged_queries": float(len(judged)),
+        "judge_skipped": float(sum(1 for r in records if r.get("judge_state") == "skipped")),
+        "judge_errors": float(sum(1 for r in records if r.get("judge_state") == "errored")),
+        # End-to-end: share of JUDGED queries whose answer was correct.
+        "task_success": _mean([r.get("judge_score", 0.0) for r in pool]),
         "hit_rate": _mean(hits),
+        # Ranking is measured on the arm's rank order; the packed order is
+        # reported beside it so the allocator's effect stays visible (D8).
         "mrr": _mean([reciprocal_rank(r) for r in scored]),
         "ndcg@10": _mean([ndcg(r) for r in scored]),
+        "mrr_packed": _mean([reciprocal_rank(r, "packed") for r in scored]),
+        "ndcg@10_packed": _mean([ndcg(r, order="packed") for r in scored]),
         "evidence_precision": _mean(precisions),
         "stale_leak_rate": _mean([stale_leak(r) for r in stale_records]),
         "mean_chars": _mean(chars),
         "budget_utilisation": _mean([c / b for c, b in zip(chars, budgets)]),
-        "mean_latency_ms": _mean(latencies),
-        "p95_latency_ms": _percentile(latencies, 0.95),
+        "mean_latency_ms": _mean(warm),
+        "p50_latency_ms": _percentile(warm, 0.50),
+        "p95_latency_ms": _percentile(warm, 0.95),
+        "p99_latency_ms": _percentile(warm, 0.99),
+        "cold_ms": _mean(cold),
+        "warm_samples": float(len(warm)),
         # Characters spent per query that actually hit evidence: the headline
         # "budget efficiency" number. Lower is better.
         "chars_per_hit": (_mean(chars) / _mean(hits)) if _mean(hits) > 0 else float("inf"),

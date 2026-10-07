@@ -18,6 +18,16 @@ Arms:
     M9  = M8 + supersession  R5, honour retire/supersede signals
     M10 = M9 + reinforcement R2, learn from memories used in correct answers
 
+Allocator attribution controls (round 4, `docs/ROUND4-DESIGN.md` 4). All three
+reuse the BM25 ranking, so the ranking policy is identical and the ONLY thing
+that differs is how text is allocated into the budget - which is what decides
+whether the engine's budget-efficiency win belongs to its store or to its
+packer:
+
+    M3t  BM25 +truncated text   full text, sliced into the budget (downgrade)
+    M3p  BM25 +engine ladder    the engine's tier ladder, tier = rank position
+    M3k  BM25 +engine packer    the engine's value-per-char packer, utility = 1/(1+rank)
+
 M6 through M10 are the SAME engine with capabilities switched on one at a time,
 so any improvement can be attributed to a named change instead of to "the
 engine" (board ruling BM-002).
@@ -47,6 +57,7 @@ from common import (
     DEFAULT_BUDGET,
     Arm,
     Recall,
+    downgrade,
     pack_blocks,
     tokenize,
 )
@@ -59,6 +70,10 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from myelinate import (  # noqa: E402  (path set up above)
+    DETAIL_VALUE,
+    GIST_MAX_CHARS,
+    SUMMARY_MAX_CHARS,
+    TIER_DETAILS,
     MyelinatedMemory,
     make_summary,
     tier_for,
@@ -119,11 +134,21 @@ class TimedArm(Arm):
 
     def recall(self, query: str, budget: int = DEFAULT_BUDGET, now: float = 0.0) -> Recall:
         start = time.perf_counter()
-        text, used = self._recall(query, budget, now)
+        out = self._recall(query, budget, now)
         elapsed = (time.perf_counter() - start) * 1000.0
         self.recall_ms.append(elapsed)
-        return Recall(text=text, used_ids=list(used), chars=len(text),
-                      latency_ms=elapsed, budget=budget)
+        # An arm may return (text, used_ids) or (text, used_ids, ranked_ids).
+        # The ranked order is the arm's own order BEFORE packing, which is what
+        # lets the report score ranking separately from allocation instead of
+        # scoring the packer as if it were the retriever (defect D8). Arms that
+        # do not declare a rank order are scored on their packed order.
+        if len(out) == 3:
+            text, used, ranked = out
+        else:
+            text, used = out
+            ranked = used
+        return Recall(text=text, used_ids=list(used), ranked_ids=list(ranked),
+                      chars=len(text), latency_ms=elapsed, budget=budget)
 
     # -- subclass hooks -----------------------------------------------------
     def _reset_store(self) -> None:  # pragma: no cover - abstract
@@ -295,11 +320,18 @@ class Bm25Arm(TimedArm):
         self.idf = {t: math.log(1.0 + (n - c + 0.5) / (c + 0.5)) for t, c in df.items()}
         self._dirty = False
 
-    def _recall(self, query, budget, now):
+    # -- ranking (shared with the M3t/M3p/M3k allocator controls) ------------
+    def _rank(self, query: str) -> List[str]:
+        """BM25-ranked memory ids, best match first.
+
+        Shared by this arm and the three allocator controls, so the only thing
+        that differs between them is how the text is allocated. Only
+        positively-scoring memories are returned, exactly as before.
+        """
         if self._dirty:
             self._build()
         if not self.docs:
-            return "", []
+            return []
         q_tokens = tokenize(query)
         scored = []
         for mem_id, doc in self.docs.items():
@@ -317,12 +349,135 @@ class Bm25Arm(TimedArm):
             if score > 0:
                 scored.append((score, doc["last_access"], doc["created"], mem_id))
         scored.sort(key=lambda row: (-row[0], -row[1], -row[2], row[3]))
-        blocks = [(row[3], self.docs[row[3]]["content"]) for row in scored]
+        return [row[3] for row in scored]
+
+    def _render_detail(self, memory_id: str, detail: str) -> str:
+        """Render one memory at a ladder detail, using the engine's own caps."""
+        content = self.docs[memory_id]["content"]
+        if detail == "full":
+            return content
+        if detail == "summary":
+            return make_summary(content, SUMMARY_MAX_CHARS)
+        return make_summary(content, GIST_MAX_CHARS)
+
+    def _recall(self, query, budget, now):
+        ranked = self._rank(query)
+        blocks = [(mem_id, self.docs[mem_id]["content"]) for mem_id in ranked]
         text, used, _ = pack_blocks(blocks, budget)
         return text, used
 
     def size(self) -> int:
         return len(self.docs)
+
+
+# --------------------------------------- M3t / M3p / M3k: allocator controls
+# All three reuse Bm25Arm._rank and none of them reads an engine score: the
+# allocation decision is driven by rank position only, so the engine's store
+# cannot contribute to their result.
+class Bm25TruncateArm(Bm25Arm):
+    """M3t: BM25 rank order, full text, TRUNCATED into the remaining budget.
+
+    The existing lexical baselines SKIP a block that does not fit; this one
+    slices it with ``common.downgrade`` instead, which is what a real truncating
+    store does. It is the fairness control D7 asked for, and the first caller
+    ``common.downgrade`` has ever had.
+    """
+
+    name = "M3t BM25 +truncated text"
+    MIN_BLOCK = 40  # a slice shorter than this is not worth a line of context
+
+    def _recall(self, query, budget, now):
+        ranked = self._rank(query)
+        lines: List[str] = []
+        used: List[str] = []
+        spent = 0
+        for mem_id in ranked:
+            remaining = budget - spent - (1 if lines else 0)
+            if remaining < self.MIN_BLOCK:
+                break
+            body = downgrade(self.docs[mem_id]["content"], remaining)
+            if not body.strip():
+                continue
+            lines.append(body)
+            used.append(mem_id)
+            spent += len(body) + (1 if len(lines) > 1 else 0)
+        return "\n".join(lines), used, ranked
+
+
+class Bm25LadderArm(Bm25Arm):
+    """M3p: BM25 rank order rendered with the ENGINE's tier/detail ladder.
+
+    The tier comes from the rank position (the top band gets the tier the engine
+    calls "active", the middle band "latent", the tail "archived") and the
+    detail allowed by that tier is read from the engine's own ``TIER_DETAILS``,
+    so the ladder is the engine's while the ranking signal stays BM25's. One
+    detail per memory is chosen up front and a block that would overflow is
+    skipped, exactly as the other lexical baselines do - so the comparison
+    isolates the ladder rather than a retry rule.
+    """
+
+    name = "M3p BM25 +engine ladder"
+    FULL_UNTIL = 8      # rank 0-7   -> "active"
+    SUMMARY_UNTIL = 24  # rank 8-23  -> "latent"; the rest -> "archived"
+
+    def _tier_for_rank(self, position: int) -> str:
+        if position < self.FULL_UNTIL:
+            return "active"
+        if position < self.SUMMARY_UNTIL:
+            return "latent"
+        return "archived"
+
+    def _recall(self, query, budget, now):
+        ranked = self._rank(query)
+        blocks = [
+            (mem_id, self._render_detail(mem_id, TIER_DETAILS[self._tier_for_rank(position)][0]))
+            for position, mem_id in enumerate(ranked)
+        ]
+        text, used, _ = pack_blocks(blocks, budget)
+        return text, used, ranked
+
+
+class Bm25PackerArm(Bm25LadderArm):
+    """M3k: BM25 rank order packed by the ENGINE's value-per-character rule.
+
+    Mirrors ``MyelinatedMemory._recall_knapsack``: every (memory, detail) option
+    that memory's rank-derived tier allows is valued at ``DETAIL_VALUE[detail] *
+    utility`` with ``utility = 1 / (1 + rank)``, then taken greedily by value per
+    character with the engine's own newline separator and budget guard. The
+    retrieval-strength score is deliberately replaced by rank position, so the
+    engine's store cannot contribute to this control.
+    """
+
+    name = "M3k BM25 +engine packer"
+
+    def _recall(self, query, budget, now):
+        ranked = self._rank(query)
+        scored: List[Tuple[float, str, str, int]] = []
+        for position, mem_id in enumerate(ranked):
+            utility = 1.0 / (1.0 + position)
+            for detail in TIER_DETAILS[self._tier_for_rank(position)]:
+                body = self._render_detail(mem_id, detail)
+                cost = len(body)
+                if cost <= 0:
+                    continue
+                scored.append((utility * DETAIL_VALUE[detail] / cost, mem_id, detail, cost))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+
+        lines: List[str] = []
+        used: List[str] = []
+        chosen: set = set()
+        spent = 0
+        for _ratio, mem_id, detail, cost in scored:
+            if mem_id in chosen:
+                continue
+            total = cost + (1 if lines else 0)
+            if spent + total > budget:
+                continue
+            lines.append(self._render_detail(mem_id, detail))
+            used.append(mem_id)
+            chosen.add(mem_id)
+            spent += total
+        return "\n".join(lines), used, ranked
 
 
 class TfidfArm(TimedArm):
@@ -547,6 +702,9 @@ def build_arms(include_network: bool = False) -> List[Arm]:
         FlatFifoArm(),
         RecencyArm(),
         Bm25Arm(),
+        Bm25TruncateArm(),
+        Bm25LadderArm(),
+        Bm25PackerArm(),
         TfidfArm(),
     ]
     if include_network:
@@ -570,6 +728,9 @@ ARM_ORDER = [
     "M1 flat/FIFO",
     "M2 recency/LRU",
     "M3 semantic/BM25",
+    "M3t BM25 +truncated text",
+    "M3p BM25 +engine ladder",
+    "M3k BM25 +engine packer",
     "M4 semantic/TF-IDF",
     "M5 semantic/dense-embeddings",
     "M6 myelinated (pure)",
@@ -587,6 +748,6 @@ def arm_names() -> List[str]:
 if __name__ == "__main__":
     arms = build_arms()
     print("arms:", ", ".join(a.name for a in arms))
-    assert len(arms) == 10, "expected 10 offline arms, got %d" % len(arms)
+    assert len(arms) == 13, "expected 13 offline arms, got %d" % len(arms)
     assert all(hasattr(a, "recall_ms") for a in arms)
     print("engines ok")

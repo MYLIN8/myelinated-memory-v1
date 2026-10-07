@@ -9,10 +9,12 @@ protocol.
 What this proves and what it does not:
 
   proves   the judge sends a well-formed request, reads the documented
-           response shape, caches identical calls, and raises JudgeError with
-           the HTTP status instead of inventing a score;
-  does not prove anything about model quality. Real LLM-judged numbers require
-  OPENAI_API_KEY in Settings -> Environment and a real endpoint.
+           response shape, caches identical calls, raises JudgeError with the
+           HTTP status instead of inventing a score, and - via STUB_429_ONCE -
+           that the rate-limit path retries and then succeeds;
+  does not prove anything about model quality. Real LLM-judged numbers need a
+  real endpoint and a key (GEMINI_KEY or OPENAI_API_KEY in Settings ->
+  Environment); this fixture never proves a model's judgement.
 
 This is a short-lived in-process test fixture. It is started by
 `benchmarks/test_llm_judge.py` inside a single command and shut down in a
@@ -27,8 +29,30 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, Tuple
 
 # Markers a caller can embed in a request to steer the stub.
-FAIL_MARKER = "STUB_FAIL"          # -> HTTP 500
+FAIL_MARKER = "STUB_FAIL"          # -> HTTP 500 (terminal, not retried)
 ZERO_MARKER = "STUB_SCORE_0"       # -> grading verdict of 0 instead of 1
+# -> HTTP 429 on the FIRST request carrying it, then a normal 200. That is the
+# only stateful marker here, and it exists so the judge's retry-with-backoff
+# path can be tested without a real rate limit and without sleeping for real.
+THROTTLE_MARKER = "STUB_429_ONCE"
+
+# Counts of throttle answers handed out, keyed by marker.
+_THROTTLE_COUNTS: Dict[str, int] = {}
+_THROTTLE_LOCK = threading.Lock()
+
+
+def reset_throttle() -> None:
+    """Forget throttle history (called by ``serve_in_thread`` and by tests)."""
+    with _THROTTLE_LOCK:
+        _THROTTLE_COUNTS.clear()
+
+
+def _first_throttle(marker: str) -> bool:
+    """True exactly once per process for ``marker``, False from then on."""
+    with _THROTTLE_LOCK:
+        seen = _THROTTLE_COUNTS.get(marker, 0)
+        _THROTTLE_COUNTS[marker] = seen + 1
+    return seen == 0
 
 # The grading call is identified by its system prompt, not by the user content,
 # so a context that happens to contain the word "score" cannot be mistaken for a
@@ -78,6 +102,10 @@ def build_response(payload: Dict) -> Tuple[int, Dict]:
     if FAIL_MARKER in blob:
         return 500, {"error": {"message": "stub forced failure", "type": "stub_error"}}
 
+    if THROTTLE_MARKER in blob and _first_throttle(THROTTLE_MARKER):
+        return 429, {"error": {"message": "stub rate limit",
+                               "type": "rate_limit_exceeded"}}
+
     if _is_grading_request(system):
         score = 0 if ZERO_MARKER in user else 1
         content = json.dumps({"score": score, "reason": "stub verdict"})
@@ -111,6 +139,10 @@ class StubHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
+        if status == 429:
+            # A real limiter sends this; the judge must honour it instead of
+            # guessing, so the stub sends it too (0 s keeps the test fast).
+            self.send_header("Retry-After", "0")
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -136,6 +168,7 @@ def serve_in_thread(port: int = 0):
     ``(server, base_url, shutdown)`` where ``base_url`` is the ``/v1`` prefix
     that ``judge.OpenAIJudge`` expects.
     """
+    reset_throttle()
     server = ThreadingHTTPServer(("127.0.0.1", port), StubHandler)
     actual_port = server.server_address[1]
     base_url = "http://127.0.0.1:%d/v1" % actual_port
@@ -171,6 +204,14 @@ if __name__ == "__main__":
         assert status == 200 and '"score": 0' in body["choices"][0]["message"]["content"]
         status, _body = build_response({"messages": [{"role": "user", "content": "STUB_FAIL"}]})
         assert status == 500
+
+        # The throttle marker answers exactly once, then behaves normally.
+        reset_throttle()
+        throttled = {"messages": [{"role": "user", "content": "STUB_429_ONCE"}]}
+        assert build_response(throttled)[0] == 429
+        assert build_response(throttled)[0] == 200
+        reset_throttle()
+        assert build_response(throttled)[0] == 429, "reset must re-arm the throttle"
         print("stub ok")
     finally:
         _shutdown()

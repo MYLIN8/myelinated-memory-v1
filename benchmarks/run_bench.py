@@ -29,7 +29,7 @@ import os
 import platform
 import sys
 import time
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import common
 import judge as judge_mod
@@ -42,6 +42,11 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(ROOT, "results")
 SCALE_MEMORIES = 10000
 SCALE_DAYS = 60
+# The scale probe times only a handful of queries, so a single pass makes the
+# reported p95 the maximum of that handful and lets two identical runs disagree.
+# The timed recall pass is therefore repeated and the reported percentiles are
+# the median of the per-pass values (defect D2 reaching the decision rule).
+SCALE_TIMED_PASSES = 3
 
 # The recommended configuration: every remediation applied.
 HERO_ARM = "M10 myelinated +reinforcement"
@@ -49,6 +54,16 @@ HERO_ARM = "M10 myelinated +reinforcement"
 PURE_ARM = "M6 myelinated (pure)"
 SEMANTIC_ARMS = ("M3 semantic/BM25", "M4 semantic/TF-IDF", "M5 semantic/dense-embeddings")
 FLAT_ARMS = ("M1 flat/FIFO", "M2 recency/LRU")
+# Allocator controls, NOT baselines. They share BM25's ranking and vary only how
+# the budget is filled, so they separate the engine's allocator from the
+# engine's store (docs/ROUND4-DESIGN.md 4). They must never be mistaken for
+# "the best baseline" the engine is measured against.
+CONTROL_ARMS = ("M3t BM25 +truncated text", "M3p BM25 +engine ladder",
+                "M3k BM25 +engine packer")
+# The decision-rule text is versioned, and the version is written into the
+# report, so a criterion that changed after a run is visible instead of
+# silently rewritten (BM-004).
+CRITERIA_VERSION = 3
 
 # Tier labels reported separately. BM-003: a supersession win must never be
 # reported as a decay win, so the two staleness suites never share a label.
@@ -98,19 +113,25 @@ def load_scenarios(tiers: Sequence[str], locomo_limit: int, locomo_queries: int,
 
 # ------------------------------------------------------------------- running
 def evaluate(scenarios: Sequence[Scenario], arms: Sequence, judge, budget: int,
-             judge_limit: int) -> Dict[str, List[Dict]]:
-    """Replay every scenario against every arm, judging inside the timeline."""
+             judge_limit: int) -> Tuple[Dict[str, List[Dict]], Dict[str, Dict[str, int]]]:
+    """Replay every scenario against every arm, judging inside the timeline.
+
+    Every judged record carries an explicit ``judge_state``. A query the run
+    never judged (a cost cap, or a call that failed) is *not* a wrong answer and
+    must not be averaged in as one (defects D5/D16).
+    """
     by_arm: Dict[str, List[Dict]] = {}
+    ledgers: Dict[str, Dict[str, int]] = {}
     source_of = {scenario.id: scenario.source for scenario in scenarios}
 
     for arm in arms:
         records: List[Dict] = []
-        counted = {"judged": 0}
+        counted = {"judged": 0, "skipped": 0, "errored": 0}
 
         def on_result(a, query, result, record, _counted=counted) -> None:
             if judge_limit and _counted["judged"] >= judge_limit:
-                record["judge_score"] = 0.0
-                record["judge_skipped"] = True
+                record["judge_state"] = "skipped"
+                _counted["skipped"] += 1
                 return
             try:
                 model_answer = judge.answer(query.query, result.text)
@@ -119,6 +140,7 @@ def evaluate(scenarios: Sequence[Scenario], arms: Sequence, judge, budget: int,
                                     check=getattr(query, "answer_check", "contains"))
                 record["model_answer"] = model_answer
                 record["judge_score"] = float(score)
+                record["judge_state"] = "judged"
                 _counted["judged"] += 1
                 # Utility-credit reinforcement (R2): reward the memories that
                 # were in the context when the answer came out right. This uses
@@ -128,16 +150,19 @@ def evaluate(scenarios: Sequence[Scenario], arms: Sequence, judge, budget: int,
                     a.reinforce(result.used_ids, now=day(query.session))
             except judge_mod.JudgeError as exc:
                 record["judge_error"] = str(exc)
-                record["judge_score"] = 0.0
+                record["judge_state"] = "errored"
+                _counted["errored"] += 1
 
         for scenario in scenarios:
             records.extend(replay(scenario, arm, budget=budget, on_result=on_result))
         for record in records:
             record["source"] = source_of.get(record["scenario"], "unknown")
         by_arm[arm.name] = records
-        print("  %-34s %3d queries judged=%d" % (arm.name, len(records), counted["judged"]),
-              file=sys.stderr)
-    return by_arm
+        print("  %-34s %3d queries judged=%d skipped=%d errored=%d"
+              % (arm.name, len(records), counted["judged"], counted["skipped"],
+                 counted["errored"]), file=sys.stderr)
+        ledgers[arm.name] = dict(counted)
+    return by_arm, ledgers
 
 
 def pairwise(by_arm: Dict[str, List[Dict]], baseline: str, key: str = "judge_score") -> List[Dict]:
@@ -203,16 +228,30 @@ def scale_rows(arms: Sequence, memories: int, days: int, seed: int) -> List[Dict
             else:
                 arm.access(event.id, event.timestamp())
         ingest = time.perf_counter() - start
-        start = time.perf_counter()
-        for query in queries:
-            arm.recall(query.query, budget=DEFAULT_BUDGET, now=day(query.session))
-        recall_total = time.perf_counter() - start
-        latencies = sorted(arm.recall_ms)
 
-        def pct(q: float) -> float:
-            if not latencies:
+        def pct(samples: Sequence[float], q: float) -> float:
+            if not samples:
                 return 0.0
-            return latencies[min(len(latencies) - 1, int(q * len(latencies)))]
+            return samples[min(len(samples) - 1, int(q * len(samples)))]
+
+        def median(values: Sequence[float]) -> float:
+            return stats.percentile(values, 0.5)
+
+        # Repeat the timed pass. Every arm does the same number of passes on the
+        # same queries, so the comparison stays fair, and taking the MEDIAN of
+        # the per-pass values keeps one unlucky pass from deciding a criterion.
+        per_pass_p95: List[float] = []
+        per_pass_p50: List[float] = []
+        per_pass_s: List[float] = []
+        for _ in range(SCALE_TIMED_PASSES):
+            arm.recall_ms.clear()
+            start = time.perf_counter()
+            for query in queries:
+                arm.recall(query.query, budget=DEFAULT_BUDGET, now=day(query.session))
+            per_pass_s.append(time.perf_counter() - start)
+            samples = sorted(arm.recall_ms)
+            per_pass_p50.append(pct(samples, 0.50))
+            per_pass_p95.append(pct(samples, 0.95))
 
         rows.append({
             "arm": arm.name,
@@ -220,12 +259,18 @@ def scale_rows(arms: Sequence, memories: int, days: int, seed: int) -> List[Dict
             "memories": len([e for e in events if e.op == "add"]),
             "ingest_s": round(ingest, 3),
             "refresh_total_s": round(sum(arm.refresh_ms) / 1000.0, 3),
-            "recall_p50_ms": round(pct(0.50), 3),
-            "recall_p95_ms": round(pct(0.95), 3),
-            "recall_total_s": round(recall_total, 3),
+            "recall_p50_ms": round(median(per_pass_p50), 3),
+            "recall_p95_ms": round(median(per_pass_p95), 3),
+            "recall_total_s": round(median(per_pass_s), 3),
+            # Kept in the raw evidence so a reader can see the spread the median
+            # was taken over rather than trusting a single figure.
+            "recall_p95_passes_ms": [round(v, 3) for v in per_pass_p95],
+            "timed_passes": SCALE_TIMED_PASSES,
         })
-        print("  %-34s stored=%d ingest=%.2fs refresh=%.2fs p95=%.1fms"
-              % (arm.name, arm.size(), ingest, sum(arm.refresh_ms) / 1000.0, pct(0.95)),
+        print("  %-34s stored=%d ingest=%.2fs refresh=%.2fs p95=%.1fms (median of %d passes: %s)"
+              % (arm.name, arm.size(), ingest, sum(arm.refresh_ms) / 1000.0,
+                 median(per_pass_p95), SCALE_TIMED_PASSES,
+                 ", ".join("%.1f" % v for v in per_pass_p95)),
               file=sys.stderr)
     return rows
 
@@ -234,8 +279,15 @@ def scale_rows(arms: Sequence, memories: int, days: int, seed: int) -> List[Dict
 def verdict(summaries: Dict[str, Dict[str, float]],
             by_source: Dict[str, Dict[str, Dict[str, float]]],
             scale: Sequence[Dict],
-            pairs: List[Dict]) -> Dict:
-    """Pre-registered criteria. Evaluated on the numbers, not chosen after."""
+            pairs: List[Dict],
+            measured: Optional[Dict[str, bool]] = None) -> Dict:
+    """Pre-registered criteria. Evaluated on the numbers, not chosen after.
+
+    A criterion whose inputs this run never produced is reported as
+    ``NOT MEASURED`` and left out of the denominator, instead of being scored a
+    phantom FAIL (defect D4).
+    """
+    measured = dict(measured or {})
     mine = summaries.get(HERO_ARM, {})
     pure = summaries.get(PURE_ARM, {})
     flat = summaries.get("M1 flat/FIFO", {})
@@ -269,51 +321,89 @@ def verdict(summaries: Dict[str, Dict[str, float]],
     scale_by_arm = {row["arm"]: row for row in scale}
     hero_scale = scale_by_arm.get(HERO_ARM, {})
     bm25_scale = scale_by_arm.get("M3 semantic/BM25", {})
-    crit_latency = bool(hero_scale) and (
+    crit_latency_measured = bool(hero_scale)
+    crit_latency = crit_latency_measured and (
         hero_scale.get("recall_p95_ms", float("inf")) < bm25_scale.get("recall_p95_ms", float("inf")))
 
     stale_retire = by_source.get(HERO_ARM, {}).get(TIER_LABELS["staleness"], {})
     stale_flat = by_source.get("M1 flat/FIFO", {}).get(TIER_LABELS["staleness"], {})
-    crit_stale = bool(stale_retire) and stale_retire.get("stale_leak_rate", 1.0) < 0.20
+    crit_stale_measured = bool(stale_retire)
+    crit_stale = crit_stale_measured and stale_retire.get("stale_leak_rate", 1.0) < 0.20
 
     stale_decay = by_source.get(HERO_ARM, {}).get(TIER_LABELS["staleness-decay"], {})
     decay_leak = stale_decay.get("stale_leak_rate")
+    crit_decay_measured = decay_leak is not None
 
-    sig = next((row for row in pairs if row["arm"] in FLAT_ARMS and row["significant"]
-                and row["diff"] > 0), None)
-    crit_sig = sig is not None
+    # BOTH flat baselines, not whichever one flatters the hero (defect D6): the
+    # criterion used to pass when either arm lost, while the other could beat it.
+    flat_rows = [row for row in pairs if row["arm"] in FLAT_ARMS]
+    crit_sig_measured = bool(flat_rows)
+    crit_sig = crit_sig_measured and all(
+        row["significant"] and row["diff"] > 0 for row in flat_rows)
+    sig_detail = "; ".join("%s %+.3f %s" % (row["arm"], row["diff"],
+                                             stats.format_p(row["p_adjusted"]))
+                           for row in flat_rows) or "no paired comparison with a flat baseline"
+
+    def criterion(text: str, ok: bool, detail: str, was_measured: bool = True,
+                  counted: bool = True) -> Tuple[str, str, str, bool]:
+        """A rule row: (text, status, detail, counted).
+
+        ``counted=False`` marks a criterion whose inputs exist but cannot
+        support a verdict. That is a distinct outcome from NOT MEASURED, and the
+        values are still printed - what changes is only that the row is kept out
+        of the pass/fail denominator.
+        """
+        if not was_measured:
+            return (text, "NOT MEASURED", "this run did not measure the inputs for it", False)
+        if not counted:
+            return (text, "INFORMATIONAL", detail, False)
+        return (text, "PASS" if ok else "FAIL", detail, True)
 
     criteria = [
-        ("Budget efficiency: no more characters per evidence hit than flat/FIFO",
-         bool(crit_budget),
-         "%.0f vs flat %.0f" % (mine.get("chars_per_hit", 0.0), flat.get("chars_per_hit", 0.0))),
-        ("Query-conditioned retrieval (pre-registered %s): within 5 hit-rate points of the best semantic arm" % HERO_ARM,
-         bool(crit_quality),
-         "%s leads by %+.3f" % (best_semantic[0] if best_semantic else "n/a", -semantic_gap)),
-        ("Best measured engine configuration reaches within 5 hit-rate points of the best semantic arm",
-         bool(best_gap is not None and best_gap <= 0.05),
-         "%s at %.3f, %s leads by %+.3f" % (
-             best_engine or "n/a", summaries.get(best_engine, {}).get("hit_rate", 0.0),
-             best_semantic[0] if best_semantic else "n/a", -(best_gap or 0.0))),
-        ("Staleness with supersession: under 20%% of superseded facts still surface",
-         bool(crit_stale),
-         "leak %.3f vs flat %.3f" % (stale_retire.get("stale_leak_rate", 1.0),
-                                     stale_flat.get("stale_leak_rate", 1.0))),
-        ("Decay alone: superseded facts fade without an explicit retire signal",
-         bool(decay_leak is not None and decay_leak < 0.20),
-         "leak %s" % ("n/a" if decay_leak is None else "%.3f" % decay_leak)),
-        ("Scale: faster recall p95 than BM25 at %d memories" % SCALE_MEMORIES,
-         bool(crit_latency),
-         "%.1fms vs %.1fms" % (hero_scale.get("recall_p95_ms", 0.0),
-                               bm25_scale.get("recall_p95_ms", 0.0))),
-        ("Significantly better end-to-end score than a flat baseline (Holm-adjusted p<0.05)",
-         bool(crit_sig),
-         sig["arm"] if sig else "no significant win"),
+        criterion("Budget efficiency: no more characters per evidence hit than flat/FIFO",
+                  bool(crit_budget),
+                  "%.0f vs flat %.0f" % (mine.get("chars_per_hit", 0.0), flat.get("chars_per_hit", 0.0))),
+        criterion("Query-conditioned retrieval (pre-registered %s): within 5 hit-rate points of the best baseline" % HERO_ARM,
+                  bool(crit_quality),
+                  "%s leads by %+.3f" % (best_semantic[0] if best_semantic else "n/a", -semantic_gap)),
+        criterion("Best measured engine configuration reaches within 5 hit-rate points of the best baseline",
+                  bool(best_gap is not None and best_gap <= 0.05),
+                  "%s at %.3f, %s leads by %+.3f" % (
+                      best_engine or "n/a", summaries.get(best_engine, {}).get("hit_rate", 0.0),
+                      best_semantic[0] if best_semantic else "n/a", -(best_gap or 0.0))),
+        criterion("Staleness with supersession: under 20% of superseded facts still surface",
+                  bool(crit_stale),
+                  "leak %.3f vs flat %.3f" % (stale_retire.get("stale_leak_rate", 1.0),
+                                              stale_flat.get("stale_leak_rate", 1.0)),
+                  crit_stale_measured),
+        criterion("Decay alone: superseded facts fade without an explicit retire signal",
+                  bool(decay_leak is not None and decay_leak < 0.20),
+                  "leak %s" % ("n/a" if decay_leak is None else "%.3f" % decay_leak),
+                  crit_decay_measured),
+        # Reported, never scored. Two back-to-back runs of this exact commit on
+        # this host measured 121.9ms vs 101.3ms (hero loses) and 108.1ms vs
+        # 126.4ms (hero wins) on the same seed, with per-pass spreads of 5x. A
+        # criterion whose sign is not reproducible cannot decide a verdict; the
+        # retrieval criteria, which do reproduce, still can (defect D2).
+        criterion("Scale: faster recall p95 than BM25 at %d memories "
+                  "(informational - single-host wall clock, not scored)" % SCALE_MEMORIES,
+                  bool(crit_latency),
+                  "%.1fms vs %.1fms; the sign of this flips between identical runs "
+                  "(median of %d passes, spread in raw.json)" % (
+                      hero_scale.get("recall_p95_ms", 0.0),
+                      bm25_scale.get("recall_p95_ms", 0.0), SCALE_TIMED_PASSES),
+                  crit_latency_measured, counted=False),
+        criterion("Significantly better end-to-end score than BOTH flat baselines (Holm-adjusted p<0.05)",
+                  bool(crit_sig), sig_detail, crit_sig_measured),
     ]
     return {
         "criteria": criteria,
-        "passed": sum(1 for _, ok, _ in criteria if ok),
+        "passed": sum(1 for _, status, _, _ in criteria if status == "PASS"),
+        "measured": sum(1 for _, status, _, _ in criteria if status in ("PASS", "FAIL")),
+        "informational": sum(1 for _, status, _, _ in criteria if status == "INFORMATIONAL"),
+        "not_measured": sum(1 for _, status, _, _ in criteria if status == "NOT MEASURED"),
         "total": len(criteria),
+        "criteria_version": CRITERIA_VERSION,
         "hero": HERO_ARM,
         "best_engine": best_engine,
         "pure": pure,
@@ -333,7 +423,8 @@ def render_report(payload: Dict) -> str:
     add("Generated by `benchmarks/run_bench.py` on %s." % payload["generated"])
     add("")
     add("> Every number in this file is produced by the command below and stored in")
-    add("> `benchmarks/results/raw.json`. Nothing here is estimated by hand.")
+    add("> `%s`. Nothing here is estimated by hand." % payload.get(
+        "raw_path", "benchmarks/results/raw.json"))
     add("")
     add("```bash")
     add(payload["command"])
@@ -350,27 +441,69 @@ def render_report(payload: Dict) -> str:
     add("| Tiers | %s |" % ", ".join(sorted(set(TIER_LABELS.get(t, t) for t in payload["tiers"]))))
     add("| Scenarios | %d |" % payload["scenario_count"])
     add("| Queries | %d |" % payload["query_count"])
+    ledger = payload.get("judge_ledger", {})
+    add("| Queries judged / skipped / errored | %d / %d / %d |" % (
+        ledger.get("judged", 0), ledger.get("skipped", 0), ledger.get("errored", 0)))
+    add("| Decision rule | version %s (frozen before the run) |" % payload.get("criteria_version", 1))
     add("")
     if not payload["judge_is_llm"]:
         add("**The judge in this run is not a language model.** It is a deterministic")
         add("evidence-containment oracle: it answers with the single most relevant retrieved")
         add("line and scores the gold answer's presence in it. That makes the run free,")
         add("offline and reproducible, but it rewards *surfacing* the evidence rather than")
-        add("*reasoning* over it. Add `OPENAI_API_KEY` and run `--judge openai` for true")
-        add("task-success numbers.")
+        add("*reasoning* over it. Set a key and run `--judge gemini` or `--judge openai` for true")
+        add("task-success numbers. `task_success` counts only queries the judge actually")
+        add("returned; skipped and errored queries are counted in the setup table instead.")
         add("")
 
     add("## Retrieval and context, per arm")
     add("")
-    columns = ["arm", "task_success", "hit_rate", "ndcg@10", "evidence_precision",
-               "stale_leak_rate", "chars_per_hit", "p95_latency_ms"]
-    rows = [dict(summaries[name], arm=name) for name in order if name in summaries]
+    columns = ["arm", "task_success", "judged_queries", "hit_rate", "ndcg@10",
+               "ndcg@10_packed", "evidence_precision", "leak_supersession", "leak_decay_only",
+               "chars_per_hit", "p50_latency_ms", "p95_latency_ms", "cold_ms"]
+    rows = []
+    for name in order:
+        if name not in summaries:
+            continue
+        arm_sources = payload.get("by_source", {}).get(name, {})
+        rows.append(dict(
+            summaries[name], arm=name,
+            leak_supersession=arm_sources.get(TIER_LABELS["staleness"], {}).get("stale_leak_rate"),
+            leak_decay_only=arm_sources.get(TIER_LABELS["staleness-decay"], {}).get("stale_leak_rate"),
+        ))
     add(metrics.format_table(rows, columns))
     add("")
-    add("*`chars_per_hit` is characters spent per query that actually reached evidence -")
-    add("lower is better. `stale_leak_rate` mixes both staleness suites; the split is in")
-    add("the staleness section below.*")
+    add("*`chars_per_hit` is characters spent per query that actually reached evidence - lower is")
+    add("better. It is a ratio of two means, so a hit-rate gain can hide a cost rise; read it next")
+    add("to `hit_rate`. `ndcg@10` and `mrr` are scored on each arm's RANK order, while")
+    add("`ndcg@10_packed` is the same measure on the order the allocator packed in - they differ")
+    add("only for arms that declare a rank order, which is the point (defect D8). The two leak")
+    add("columns are the two staleness suites, reported separately and never merged (BM-003).")
+    add("Latency percentiles exclude each scenario's first (cold) recall, which pays any lazy")
+    add("index build; `cold_ms` is the mean of those samples and `-` means none were taken.*")
     add("")
+
+    controls = [name for name in CONTROL_ARMS if name in summaries]
+    if controls:
+        add("## Allocator controls: is the win the store or the packer?")
+        add("")
+        add("M3t, M3p and M3k share BM25's ranking and differ only in how the budget is filled,")
+        add("so they separate the engine's allocator from the engine's store (round-4 design 4).")
+        add("They are controls, not baselines: none of them is the arm the engine is judged against.")
+        add("")
+        control_rows = []
+        for name in ("M3 semantic/BM25",) + tuple(controls) + (
+                PURE_ARM, "M8 myelinated +knapsack", "M9 recency +knapsack"):
+            summary = summaries.get(name)
+            if not summary:
+                continue
+            control_rows.append({"arm": name, "task_success": summary["task_success"],
+                                 "hit_rate": summary["hit_rate"], "ndcg@10": summary["ndcg@10"],
+                                 "chars_per_hit": summary["chars_per_hit"],
+                                 "budget_fill": summary["mean_chars"]})
+        add(metrics.format_table(control_rows, ["arm", "task_success", "hit_rate", "ndcg@10",
+                                                "chars_per_hit", "budget_fill"]))
+        add("")
 
     add("## Ablation ladder")
     add("")
@@ -466,9 +599,13 @@ def render_report(payload: Dict) -> str:
     add("## Scale: %d memories over %d virtual days" % (
         payload["scale"]["memories"], payload["scale"]["days"]))
     add("")
-    add(metrics.format_table(payload["scale"]["rows"],
-                             ["arm", "stored", "ingest_s", "refresh_total_s",
-                              "recall_p50_ms", "recall_p95_ms"]))
+    if payload["scale"]["rows"]:
+        add(metrics.format_table(payload["scale"]["rows"],
+                                 ["arm", "stored", "ingest_s", "refresh_total_s",
+                                  "recall_p50_ms", "recall_p95_ms"]))
+    else:
+        add("Not measured: this run passed `--skip-scale`, so the latency criterion below is")
+        add("reported as NOT MEASURED rather than scored on an empty table (defects D4/D15).")
     add("")
 
     add("## Decision rule")
@@ -480,11 +617,16 @@ def render_report(payload: Dict) -> str:
     add("> Anything else is a loss that needs the remediation list in")
     add("> `docs/REMEDIATION.md`.")
     add("")
-    for text, ok, detail in payload["verdict"]["criteria"]:
-        add("- %s **%s** - %s" % ("PASS" if ok else "FAIL", text, detail))
+    for text, status, detail, _counted in payload["verdict"]["criteria"]:
+        add("- **%s** - %s - %s" % (status, text, detail))
     add("")
-    add("**Verdict: %d of %d criteria passed.**" % (
-        payload["verdict"]["passed"], payload["verdict"]["total"]))
+    verdict = payload["verdict"]
+    measured_n = verdict.get("measured", verdict["total"])
+    info_n = verdict.get("informational", 0)
+    unmeasured_n = verdict.get("not_measured", verdict["total"] - measured_n - info_n)
+    add("**Verdict: %d of %d scored criteria passed** - %d row%s informational (printed, not"
+        " scored) and %d not measured in this run." % (
+            verdict["passed"], measured_n, info_n, "" if info_n == 1 else "s", unmeasured_n))
     add("")
     add("The pre-registered hero is `%s` and is not swapped for whichever arm wins." % HERO_ARM)
     add("The best measured engine configuration in this run is `%s`%s." % (
@@ -492,6 +634,38 @@ def render_report(payload: Dict) -> str:
         "" if payload["verdict"].get("best_engine") == HERO_ARM
         else " - a different arm, reported alongside rather than instead"))
     add("")
+
+    # If an allocator control outranks every engine arm, say so here. It is the
+    # single most load-bearing reading of this report (round-4 design 4): a
+    # control leading means the mechanism's budget win came from its packer, and
+    # a reader who only sees the arm table would otherwise take the engine's
+    # hit-rate row for a store success.
+    best_engine_name = payload["verdict"].get("best_engine") or HERO_ARM
+    engine_names = [PURE_ARM, "M7 myelinated +similarity", "M8 myelinated +knapsack",
+                    "M9 myelinated +supersession", HERO_ARM]
+    leading_control = None
+    for name in CONTROL_ARMS:
+        if name not in summaries:
+            continue
+        engine_best = max((summaries[n]["hit_rate"] for n in engine_names if n in summaries),
+                          default=0.0)
+        if summaries[name]["hit_rate"] > engine_best:
+            leading_control = name
+    if leading_control:
+        control = summaries[leading_control]
+        engine = summaries.get(best_engine_name, {})
+        add("**Attribution, and it matters:** `%s` is an allocator *control*, not an engine -"
+            % leading_control)
+        add("it ranks with BM25 and only packs the budget differently - and it leads every engine")
+        add("arm on hit rate (%.3f against %s's %.3f) while spending %.0f characters per hit"
+            % (control["hit_rate"], best_engine_name, engine.get("hit_rate", 0.0),
+               control["chars_per_hit"]))
+        add("against %.0f. So the engine's budget win is attributable to its **allocator**, not"
+            % engine.get("chars_per_hit", 0.0))
+        add("its **store**: the strength, decay and tier machinery is not what earned it. It is")
+        add("reported as a finding rather than a win, and the control is not swapped in as the")
+        add("hero (BM-004).")
+        add("")
     add("**%s**" % ("Remediation continues against the best configuration."
                     if payload["verdict"]["best_engine_needs_remediation"]
                     else "The best configuration closes the stated gap on this workload."))
@@ -542,6 +716,30 @@ def build_notes(include_network: bool) -> List[str]:
         "The archived tier renders a content gist rather than the specification's "
         "\"ID stub\", because id stubs filled the budget with text no answering "
         "model can read (remediation R7).",
+        "Latency percentiles cover warm recalls only. The first recall of a scenario "
+        "pays any lazy index build and is reported as its own mean (cold_ms), because "
+        "folding one cold sample into a five-sample p95 measured startup, not query "
+        "cost (defect D2).",
+        "The scale latency figures are the median of %d timed passes over the same "
+        "queries, not one pass: with five queries a single pass made \"p95\" the "
+        "maximum of five samples, and two identical runs disagreed about the scale "
+        "criterion. The per-pass values stay in raw.json. Wall-clock numbers remain "
+        "noisier than the retrieval metrics." % SCALE_TIMED_PASSES,
+        "M3t/M3p/M3k are allocator controls, not baselines: they share BM25's ranking "
+        "and vary only how the budget is filled, so they attribute the engine's "
+        "budget win to its allocator rather than its store (round-4 design 4).",
+        "Supersession fires on an inferred update as well as on an explicit retire: a "
+        "memory at Jaccard >= 0.90 whose value words changed (different token set) is "
+        "stored and the superseded entry is retired, with no signal from the caller. "
+        "That is a capability change, reported as one (BM-002), and it is why the "
+        "decay-only leak column can now move.",
+        "The decision rule is version 3, and every change in it is a repair of the "
+        "same class of bug: an unmeasured criterion reports NOT MEASURED instead of a "
+        "phantom FAIL, the scale latency criterion reports INFORMATIONAL instead of a "
+        "coin flip (its sign is not reproducible between identical runs), the "
+        "significance criterion now requires BOTH flat baselines rather than whichever "
+        "one flattered the hero, and the merged stale-leak column is gone. The rule is "
+        "still frozen before the run and its version is printed above.",
     ]
     if not include_network:
         notes.append(
@@ -551,11 +749,47 @@ def build_notes(include_network: bool) -> List[str]:
 
 
 # ----------------------------------------------------------------------- main
+def report_path_for(args: argparse.Namespace) -> str:
+    """Where this run's report goes.
+
+    The committed ``benchmarks/RESULTS.md`` is only ever replaced by the full
+    default run. A scoped run (``--tier``, ``--skip-scale``) writes its own file,
+    because a partial report that silently overwrites the published one is a
+    data-loss bug, not a convenience (defect D15).
+    """
+    if args.report:
+        return args.report if os.path.isabs(args.report) else os.path.join(ROOT, args.report)
+    full = (args.tier == "all" and not args.skip_scale and args.out == RESULTS_DIR)
+    if full:
+        return os.path.join(ROOT, "RESULTS.md")
+    label = args.tier if args.tier != "all" else "partial"
+    return os.path.join(ROOT, "RESULTS-%s.md" % label)
+
+
+def raw_path_for(args: argparse.Namespace) -> str:
+    """Where this run's raw evidence goes, on the same rule as the report.
+
+    ``results/raw.json`` is the evidence behind the committed report, so a
+    scoped run writes ``raw-<tier>.json`` instead of overwriting it (the same
+    D15 data-loss bug, one file over). An explicit ``--out`` is honoured as
+    written, because that is a scratch directory the caller chose.
+    """
+    if args.out != RESULTS_DIR:
+        return os.path.join(args.out, "raw.json")
+    if args.tier == "all" and not args.skip_scale:
+        return os.path.join(RESULTS_DIR, "raw.json")
+    label = args.tier if args.tier != "all" else "partial"
+    return os.path.join(RESULTS_DIR, "raw-%s.json" % label)
+
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Myelinated Memory benchmark")
     parser.add_argument("--tier", default="all",
                         choices=["all", "curated", "synthetic", "staleness", "locomo"])
-    parser.add_argument("--judge", default="auto", choices=["auto", "oracle", "openai"])
+    parser.add_argument("--judge", default="auto",
+                        choices=["auto", "oracle", "openai", "gemini", "llm"],
+                        help="auto/oracle = the offline deterministic judge (default); "
+                             "llm = first available model judge; gemini/openai = pin one")
     parser.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--locomo-limit", type=int, default=3)
@@ -567,6 +801,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--skip-scale", action="store_true")
     parser.add_argument("--scale-memories", type=int, default=SCALE_MEMORIES)
     parser.add_argument("--out", default=RESULTS_DIR)
+    parser.add_argument("--report", default=None,
+                        help="override the report path (default: RESULTS.md for a full run, "
+                             "RESULTS-<tier>.md otherwise)")
     return parser.parse_args(argv)
 
 
@@ -580,8 +817,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         tiers = [args.tier]
 
     judge = judge_mod.make_judge(args.judge)
-    if args.judge == "openai" and not judge.is_llm:  # pragma: no cover - defensive
-        print("[error] --judge openai requires OPENAI_API_KEY", file=sys.stderr)
+    if args.judge in ("openai", "gemini", "llm") and not judge.is_llm:  # pragma: no cover
+        print("[error] --judge %s needs its API key (GEMINI_KEY or OPENAI_API_KEY)"
+              % args.judge, file=sys.stderr)
         return 2
 
     scenarios = load_scenarios(tiers, args.locomo_limit, args.locomo_queries, args.seed)
@@ -590,7 +828,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
           file=sys.stderr)
 
     arms = build_arms(include_network=args.network)
-    by_arm = evaluate(scenarios, arms, judge, args.budget, args.judge_limit)
+    by_arm, ledgers = evaluate(scenarios, arms, judge, args.budget, args.judge_limit)
+    judge_ledger = {
+        key: sum(per_arm.get(key, 0) for per_arm in ledgers.values())
+        for key in ("judged", "skipped", "errored")
+    }
 
     summaries = {name: metrics.summarize(records) for name, records in by_arm.items()}
     by_kind = {name: metrics.by_kind(records) for name, records in by_arm.items()}
@@ -615,6 +857,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "judge_mode": judge.mode,
         "judge_is_llm": bool(judge.is_llm),
         "judge_calls": getattr(judge, "calls", 0),
+        "judge_ledger": judge_ledger,
+        "judge_counters": judge.counters() if hasattr(judge, "counters") else {},
+        "criteria_version": CRITERIA_VERSION,
         "budget": args.budget,
         "seeds": [args.seed],
         "tiers": tiers,
@@ -627,28 +872,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "by_source": by_source,
         "pairs": pairs,
         "scale": scale,
-        "verdict": verdict(summaries, by_source, scale["rows"], pairs),
+        "verdict": verdict(summaries, by_source, scale["rows"], pairs,
+                           measured={"scale": bool(scale["rows"]), "pairs": bool(pairs)}),
         "notes": build_notes(args.network),
         "records_by_arm": trim_records(by_arm),
     }
 
     os.makedirs(args.out, exist_ok=True)
-    raw_path = os.path.join(args.out, "raw.json")
+    raw_path = raw_path_for(args)
+    # Repo-relative, so the path printed in the report is one a reader can use
+    # from the repository root rather than one relative to benchmarks/.
+    payload["raw_path"] = "benchmarks/" + os.path.relpath(raw_path, ROOT)
     with open(raw_path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True, default=str)
         handle.write("\n")
 
     report = render_report(payload)
-    report_path = os.path.join(ROOT, "RESULTS.md")
+    report_path = report_path_for(args)
     with open(report_path, "w", encoding="utf-8") as handle:
         handle.write(report)
         handle.write("\n")
+    if os.path.basename(report_path) != "RESULTS.md":
+        print("note: wrote %s, not the committed RESULTS.md, because this is not the full "
+              "default run (defect D15)" % report_path, file=sys.stderr)
 
     print("\n" + metrics.format_table(
         [dict(summaries[name], arm=name) for name in payload["arm_order"] if name in summaries],
-        ["arm", "task_success", "hit_rate", "ndcg@10", "chars_per_hit", "p95_latency_ms"]))
-    print("\nverdict: %d/%d criteria passed" % (payload["verdict"]["passed"],
-                                                payload["verdict"]["total"]))
+        ["arm", "task_success", "judged_queries", "hit_rate", "ndcg@10", "ndcg@10_packed",
+         "chars_per_hit", "p95_latency_ms", "cold_ms"]))
+    print("\nverdict: %d of %d scored criteria passed (%d informational, %d not measured)" % (
+        payload["verdict"]["passed"], payload["verdict"]["measured"],
+        payload["verdict"].get("informational", 0), payload["verdict"].get("not_measured", 0)))
     print("wrote %s" % raw_path)
     print("wrote %s" % report_path)
     return 0

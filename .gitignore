@@ -8,3 +8,11 @@ benchmarks/data/
 __pycache__/
 *.py[cod]
 .venv/
+
+# Local secrets (managed through the Keys / API keys UI, never committed)
+.env
+.env.local
+
+# Scoped benchmark artefacts: only the full default run writes the committed report
+benchmarks/RESULTS-*.md
+benchmarks/results/raw-*.json

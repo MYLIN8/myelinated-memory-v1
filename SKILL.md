@@ -1,7 +1,7 @@
 ---
 name: myelinated-memory
 description: "Use when managing a limited context budget across stored memories: tiered recall, session-boundary consolidation, supersession."
-version: 2.0.0
+version: 4.0.0
 author: Hermes Agent
 tags: [memory, myelination, recall, prioritization, context-budget]
 ---
@@ -21,8 +21,8 @@ The mechanism is implemented and benchmarked; the claim that comes with the name
 
 1. **Session start:** `refresh` (decay, then consolidate). Then `recall --query "<the question>"`.
 2. **During session:** `access <memory_id>` for a memory that was actually used. `pin <memory_id>` for anything safety-critical or identity-fixed — pinned memories never decay and are never crowded out.
-3. **Adding memories:** `add --content "..." --category <category>`. Near-duplicates collapse into the existing entry; protected entries are never archived.
-4. **Changing facts:** `retire <old_id>`, or `add --content "..." --supersedes <old_id>`.
+3. **Adding memories:** `add --content "..." --category <category>`. Near-duplicates collapse into the existing entry; a memory that is ≥ 0.90 similar but whose value words differ is treated as an **update** — the new wording is stored and the old entry is retired for you. Protected entries are never archived.
+4. **Changing facts:** `retire <old_id>`, or `add --content "..." --supersedes <old_id>`. An explicit signal is still the clearest one — do not rely on the engine inferring an update.
 
 ## Commands
 
@@ -53,22 +53,29 @@ python3 scripts/myelinate.py stats
 off similarity, packing and supersession and ignores `--query`; it exists to reproduce the original
 specification, not for daily use.
 
+`recall` accepts only `--budget` and `--query`: there is no per-category filter, and the command
+**saves the store**, so a read is a write. Always pass `--query` — without it recall is
+query-blind and returns the top of the strength ranking instead of the answer to your question.
+
+Decay is now honest: strength is *derived* from a stored `(score, score_at)` pair rather than
+re-applied on every `refresh`, so refreshing hourly, daily or once a week gives the same score
+curve and frequent `refresh` calls cannot over-decay the store (defect D1, fixed in round 4).
+
 ## Known limits
 
 Read these before relying on this skill. Each is tracked with a fix in
 [`docs/FIX-PLAN.md`](docs/FIX-PLAN.md).
 
-- **Decay compounds (D1).** `refresh()` re-applies `exp(-rate × dormant days)` while the decay
-  baseline does not advance, so the real exponent is `rate × d(d+1)/2`: after 30 daily refreshes a
-  score is ~0.000001 instead of the documented 0.244. Frequent `refresh` calls over-decay the
-  store. Prefer `--category` and `access` over long unattended dormancy.
-- **A correction can be absorbed by the fact it replaces (D13/D14).** An update worded ≥ 0.9
-  Jaccard-similar to the memory it supersedes collapses into it; if that memory was retired, the
-  correction is lost and nothing surfaces. Reword updates so they differ in more than one value
-  word, or `retire` the old entry and add the new one with distinct phrasing.
-- **Decay-only retirement is unproven.** With an explicit `retire`/`--supersedes` signal the
-  superseded fact stops surfacing (leak 0.000); with no signal the same scenarios leak 1.000. The
-  mechanism the project is named after does not yet retire a stale fact on its own.
-- **Ranking is fine, not best.** On the project's own benchmark a plain BM25 baseline orders
-  evidence better (nDCG@10 0.732 vs 0.606); the measured win is budget allocation (1589 characters
-  per evidence hit against a flat store's 1734).
+- **Decay-only retirement is still unproven.** With an explicit `retire`/`--supersedes` signal the
+  superseded fact stops surfacing (leak 0.000). With **no** signal the configured arm still leaks
+  1.000; the *pure* configuration now leaks 0.000 while retrieving 1.000 of the evidence, which is
+  the first time in this project that decay alone demoted a stale fact — a lead on a three-scenario
+  suite, not a proven capability. Retire what you know has been replaced.
+- **The budget win belongs to the allocator, not the store.** A BM25 arm that borrows only the
+  engine's packer leads the whole suite (hit rate 0.893 against the best engine arm's 0.835, at
+  1296 characters per evidence hit against 1572). The strength, decay and tier machinery has not
+  been shown to earn its cost — see the allocator controls in
+  [benchmarks/RESULTS.md](benchmarks/RESULTS.md).
+- **Ranking is fine, not best.** A plain BM25 baseline orders evidence better (nDCG@10 0.732
+  against 0.639 for the best engine arm). The measured win over *flat* memory is budget
+  allocation: 1572 characters per evidence hit against a flat store's 1734.

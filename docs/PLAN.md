@@ -8,6 +8,14 @@
 > (D13–D18 below). It changes no behaviour; it sequences the work in §5 by what it costs to
 > leave alone, and it states what the missing `OPENAI_API_KEY` blocks.
 
+> **Round 4 — much of this plan has now run.** Gate 0 and the first item of Gate 1 have landed: the
+> decay arithmetic (W0.1/D1), index invalidation (W0.7/D9), the update/restatement split (D13/D14),
+> the leak and judge-state fixes (W0.3–W0.6), the rank-order metrics (W5/D8), the report guard (D15)
+> and the attribution control arms (W1.1) are in the code, asserted by `benchmarks/test_engine.py`
+> and `benchmarks/test_llm_judge.py`, and the report has been regenerated under decision-rule
+> version 3. W1.1 answered in favour of the **allocator**. Per-item status is in the gate tables in §5
+> and in [`FIX-PLAN.md`](FIX-PLAN.md) §0; this document keeps its round-3 text and rationale.
+
 Round 2 closed the retrieval gap to 4.9 hit-rate points and flipped budget
 efficiency, and the report says so. This plan exists because reviewing that work
 with four parallel analyst pods found that **several of round 2's numbers do not
@@ -63,6 +71,13 @@ top (M8) drops to 0.606 while hit rate *rises* to 0.825. Myelination as built is
 a **budget allocator and consolidation policy**, not a better retriever, and the
 honest plan tests it that way (§6, W1).
 
+**Round-4 update — the reasoning above is now a measurement.** The committed M8 row is nDCG@10
+**0.639** at hit rate **0.835**, and the new allocator control **M3k** (BM25 ranking filled by the
+engine's own packer) reaches hit rate **0.893** against M8's 0.835, **0.717** against M8's 0.433 on
+LoCoMo, and fewer characters per hit (1296 against 1572). A control with no store of its own, no
+decay and no tiers beats every engine arm, so the demotion this section argues for is measured
+rather than inferred.
+
 ---
 
 ## 3. Measurement defects (Gate 0)
@@ -90,6 +105,16 @@ that closes it. Nothing in Gate 1 may be measured before Gate 0 lands.
 | **D16** | **Judge errors are scored as failures and reported nowhere.** `on_result` catches `JudgeError` and writes `judge_score = 0.0`; no run publishes a judged/skipped/errored count | `run_bench.py` `evaluate.on_result` | Any run that loses the API mid-flight reports a *lower* task success rather than an incomplete run | `judged`/`skipped`/`errored` counted and printed, excluded from `task_success` (same fix as D5) |
 | **D17** | **A hidden ranking parameter**: `similarity_scores()` truncates the query vector with a literal `[:48]` inside the function body — not in the constants block, not marked `ASSUMPTION`, absent from the tuning inventory | `scripts/myelinate.py`, `sorted(q_vec.items(), …)[:48]` | Every similarity score, and therefore ranking, nDCG and the whole `PRIOR_WEIGHT` result | Hoisted to `QUERY_TERM_LIMIT` with an `ASSUMPTION` note and listed in `TESTING.md` §5; top-10 ids unchanged for a fixed corpus |
 | **D18** | Small holes: `pin()` will pin a retired memory (score 1.0, still hidden); `_prune()` cannot honour `--max-entries` without enough archived entries and reports no shortfall; the CLI's `recall` calls `save()`, so a read rewrites the store; `stats._exact_two_sided_p` never reads `w_minus` | Code inspection (`myelinate.py` `pin`/`_prune`/`main`, `stats.py`) | Hygiene; none of them touches a published number | One assertion each, in `test_engine.py` / `stats.py` |
+
+---
+
+**Round-4 status for this table.** **Closed and asserted:** D1, D3, D4, D5, D6, D8, D9, D12, D13,
+D14, D15, D16. **Partly closed: D2** — warm recalls are separated from cold with p50/p95/p99 plus a
+`cold_ms` mean and the scale figures are the median of three timed passes, but the criterion itself
+is reported as `INFORMATIONAL` because two identical runs flipped its sign on this host. **Answered
+rather than patched: D7** — the control M3k beats every engine arm on hit rate and on characters per
+hit, so the budget win is allocation. **Not re-checked in this pass:** D10, D11. **Still open:** D17,
+and of D18 only `pin()` on a retired memory is fixed.
 
 ---
 
@@ -126,6 +151,16 @@ meetings' verdict applied before work starts.
   language model judges, because the oracle rewards evidence containment and the
   top two arms differ by 0.010 (TF-IDF 0.563 vs 0.553).
 
+**Round-4 outcomes.** **BM-006 applied:** the decay bug is fixed, the report regenerated under the
+new rule version, and no affected figure is compared across the change. **BM-007 answered:** the M3p
+and M3k controls show the win is allocation (see §2). **BM-008 applied:** the significance criterion
+requires both flat arms and prints both diffs and p-values. **BM-009 not executed, and it is the one
+ruling this round leaves owed:** the decay-only leak is still **1.000** for the hero, so the claim has
+neither been proven against a retrieval floor nor formally retired, and the round-4 measurement says
+the current answer is no. **BM-010 still stands:** no task-success claim ships — a free-tier Gemini
+key now exists and the judge is integrated, but no harness-level model-judged run has completed, so no
+table is labelled LLM-judged.
+
 ---
 
 ## 5. The plan
@@ -144,9 +179,15 @@ criterion is pre-registered here and must not be adjusted after seeing numbers.
 | **W0.5** | `--judge-limit` must not fake zeros (D5) | Research | `benchmarks/run_bench.py`, `benchmarks/metrics.py` | constant-1.0 stub judge + `--judge-limit 20` → judged task success equals uncapped | S |
 | **W0.6** | Both flat arms or nothing (D6) | Research | `benchmarks/run_bench.py` | criterion requires M1 and M2; both diffs/p printed | S |
 | **W0.7** | Invalidate the index on retire (D9) | Engineering | `scripts/myelinate.py` | probe: incremental scores == full rebuild after a retire | S |
-| **W0.8** | **Engine regression suite** — the engine had *no* automated check, which is how the decay bug and the stale index survived two rounds. **Delivered:** `benchmarks/test_engine.py`, 69 checks, green, with a `known_defect()` registry | Engineering | `benchmarks/test_engine.py` | **MET** — `python3 benchmarks/test_engine.py` prints `engine ok: 69 checks` and registers exactly two tracked defects (W0.1 compounding decay, W0.7 stale similarity index) as `KNOWN DEFECT` instead of failing, so the suite stays green across the fixes; the metric and verdict fixtures remain W0.9–W0.10 | M |
+| **W0.8** | **Engine regression suite** (69 checks when delivered, **139** now) — the engine had *no* automated check, which is how the decay bug and the stale index survived two rounds. **Delivered:** `benchmarks/test_engine.py`, 69 checks, green, with a `known_defect()` registry | Engineering | `benchmarks/test_engine.py` | **MET, and green with an empty registry** — `python3 benchmarks/test_engine.py` now prints `engine ok: 139 checks` with **no** `KNOWN DEFECT` line: W0.1, W0.7, D13 and D14 are asserted for real, while the `known_defect()` mechanism stays in the file so a new tracked defect can be registered; the metric and verdict fixtures remain W0.9–W0.10 | M |
 | **W0.9** | Metric and verdict fixtures — hand-computed nDCG/MRR/hit/leak, and the decision-rule logic with fake summaries | Research | `benchmarks/test_metrics.py`, `benchmarks/test_verdict.py` (new) | the three decision-rule defects (one-of-two flat arms, unmeasured criteria scored, `judge_skipped` counted) are caught by the tests | M |
 | **W0.10** | Harness invariants — replay determinism and the budget guarantee for all 10 arms | Research | `benchmarks/test_harness.py` (new) | same scenario twice gives identical records; every arm respects the budget on a fixed scenario | S |
+
+**Round-4 status:** W0.1 ✅, W0.3 ✅, W0.4 ✅, W0.5 ✅, W0.6 ✅, W0.7 ✅, W0.8 ✅ (139 checks, empty
+registry). W0.2 **partly** — the measurement landed (warm/cold separation, p50/p95/p99, a median of
+three timed passes), but the criterion is informational because it cannot be scored reproducibly on
+this host. W0.9 and W0.10 **still open**, and they matter more now than when they were written: the
+harness defects they were meant to catch are fixed in code and pinned by no test.
 
 ### Gate 1 — attribution and engine work (after Gate 0)
 
@@ -160,14 +201,28 @@ criterion is pre-registered here and must not be adjusted after seeing numbers.
 | **W5** | Report ranking separately from packing (D8): record pre-packing rank order; report nDCG both ways | Research | `benchmarks/common.py`, `benchmarks/metrics.py` | both orders in RESULTS; criterion added: nDCG@10 within 0.05 of the best semantic arm | M |
 | **W6** | Statistical power: `--seeds a,b,c`; parameterise the staleness generator (≥20 stale-bearing queries); print `n` and the `2/2ⁿ` floor beside every statistic and mark groups below the Holm floor `NOT TESTABLE` (n ≥ 9 with 9 comparisons) | Research | `benchmarks/run_bench.py`, `benchmarks/synthetic.py`, `benchmarks/stats.py` | staleness verdict decided on a pooled mean over ≥5 seeds with the per-seed range shown | M |
 
+**Round-4 status:** W1.1 ✅ — it shipped as **three** controls rather than one (M3t BM25 + truncated
+text, M3p BM25 + the engine ladder, M3k BM25 + the engine packer) and answered Outcome A: M3k reaches
+hit rate 0.893 against the 0.825 the criterion named, at 1296 characters per hit, so the win is
+restated as allocation. W5's D8 half is **done** (the rank order is recorded and both orders are
+reported); its additional criterion is not. W1.2, W2, W3, W4 and W6 are **open**, and W4 is now the
+one that matters, because the round-4 measurement is the input it was waiting for.
+
 ### Gate 2 — product, claims and distribution
 
 | ID | Work | Owner | Files | Acceptance | Size |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **W7** | Make the skill's interface truthful (D10): the documented recall must pass the question, `--category` documented, `--pure` placement fixed, `list`/`stats` documented, `--pure --query` errors or is documented | Product | `SKILL.md`, `README.md` | every SKILL.md command runs verbatim against the engine (scripted check); the documented default configuration has a RESULTS row | M |
 | **W8** | Claims register → corrections (D11), then a scripted guard that every quantitative README claim matches a RESULTS row | Product | `README.md`, `SECURITY.md`, `CONTRIBUTING.md`, `docs/HOW-IT-WORKS.md` | register empty of UNSUPPORTED; the guard runs in the bench's self-check | M |
-| **W9** | LLM-judged run (**blocked on `OPENAI_API_KEY`**) | Research | `benchmarks/run_bench.py` | curated + synthetic tiers only, cost-capped, `judged_queries` reported; numbers labelled LLM-judged | S once keyed |
+| **W9** | LLM-judged run (was blocked on a key; the Gemini judge is now integrated, so this is a run away rather than a key away — still unrun) | Research | `benchmarks/run_bench.py`, `benchmarks/judge.py` | curated + synthetic tiers only, cost-capped, `judged_queries` reported; numbers labelled LLM-judged | S, still unrun |
 | **W10** | Positioning + a "choose this if" table whose every cell maps to a report row; SKILL front-matter description naming only supported capabilities | Product / S&M | `README.md`, `docs/CHOOSING.md`, `SKILL.md` | no cell without a source row; no capability in the trigger description that lacks a tested path | M |
+
+---
+
+**Round-4 status:** W9 is **no longer key-blocked** — the Gemini judge is integrated, live-verified on
+two real calls, and reachable with `--judge gemini` or `--judge llm` — but it **has not run**: the
+free-tier quota was exhausted during verification, so no table in the report is labelled LLM-judged.
+W7, W8 and W10 were not re-checked in this pass.
 
 ---
 
@@ -193,6 +248,13 @@ the decay claim either proven with a retrieval floor or formally retired; every
 new criterion pre-registered before its run; and no README sentence without a
 supporting row in the report. Round 3 does **not** require beating semantic
 retrieval — it requires knowing which component does what.
+
+**Round-4 status.** Gate 0 is substantively closed and the first Gate 1 item is answered, which is the
+point the sequence was designed to reach: the engine's claims can now be decided with instruments that
+do not manufacture a verdict. What is **not** done: the fixture files (W0.9/W0.10), the seed and power
+work (W6), every engine speed-up (W2/W3), the W1.2 confirmatory run, and W4/BM-009 — the decay claim is
+still unresolved, and on these numbers the current answer is no. The reframing above is confirmed,
+though: the value the measurements keep finding is allocation and consolidation, not ranking.
 
 ---
 
@@ -246,13 +308,17 @@ allocation/consolidation feature, and `docs/REMEDIATION.md`'s remaining items
 ## 9. Reproduce / verification log
 
 Everything this plan asserts, in the order it was checked. All commands from the
-repo root, Python 3.10.12, no API key set.
+repo root, Python 3.10.12, no API key set. **Round 4 note:** a free-tier `GEMINI_KEY` is now
+configured in the workspace; `--judge auto` still selects the offline oracle, so every command below
+reproduces the same offline numbers it did in round 3.
 
 ```bash
-# Full benchmark — reproduces the round-2 tables exactly (4 of 7, M8 0.825, 1589 chars/hit)
-python3 benchmarks/run_bench.py                       # 37 s
+# Full benchmark — reproduced the round-2 tables exactly (4 of 7, M8 0.825, 1589 chars/hit)
+# Round 4: 4 of 6 scored criteria passed, 1 informational (scale, not scored);
+# M8 0.835 hit rate, 0.639 nDCG@10, 1572 chars/hit
+python3 benchmarks/run_bench.py                       # about 50 s now, with 13 arms
 
-# Engine regression suite — 69 checks, and it registers W0.1 / W0.7 as known defects
+# Engine regression suite — 69 checks then; 139 now, and no KNOWN DEFECT line
 python3 benchmarks/test_engine.py
 
 # Constant sweep — never writes the report; the 0.35 row must reproduce M8 exactly
@@ -284,7 +350,8 @@ print(collections.Counter((r["source"], r["kind"]) for r in stale))
 PY
 # 14 curated contradiction + 2 synthetic contradiction + 3 + 3 staleness == 22; M9 mixed = 19/22 = 0.864
 
-# D4 — a scoped run invents failures
+# D4 — a scoped run invents failures (historical: it now reports n of m scored, writes
+# RESULTS-staleness.md instead of the committed report, and marks unmeasured rows NOT MEASURED)
 python3 benchmarks/run_bench.py --tier staleness     # prints "verdict: 3/7"
 
 # D7 — packing lives only in the engine
@@ -305,5 +372,10 @@ from the same code and seed. Every table is identical to the round-2 report
 except the noisy latency and ingest figures (M8 scale p95 93.4 → 115.8 ms, ingest
 4.4 → 5.4 s, BM25 p95 59.3 → 47.3 ms); the README has been realigned to that
 report, and D2 is precisely why those figures move.
+
+**Round-4 regeneration.** The report was regenerated after the engine fixes, under decision-rule
+version 3, so the figures quoted throughout the round-3 text above (M8 0.825 hit rate, 0.606 nDCG,
+1589 chars/hit, 4 of 7) are superseded by the current ones (0.835, 0.639, 1572, 4 of 6 scored). They
+are left in place as the record of what round 3 measured; nothing is compared across the change (BM-006).
 
 No source file was modified by this plan.

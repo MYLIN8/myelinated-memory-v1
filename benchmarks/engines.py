@@ -1,0 +1,592 @@
+"""Memory systems under test ("arms") for the Myelinated Memory benchmark.
+
+Every arm implements ``benchmarks.common.Arm`` and therefore sees the identical
+event stream, the identical virtual clock and the identical character budget.
+The only thing that differs is the memory policy being tested.
+
+Arms:
+
+    M0  no memory            control (context is always empty)
+    M1  flat / FIFO          append everything; the budget keeps the oldest
+    M2  recency / LRU        most recently touched first
+    M3  semantic - lexical   BM25 top-k over the store
+    M4  semantic - vector    TF-IDF cosine over the store
+    M5  semantic - dense     embedding cosine (needs OPENAI_API_KEY)
+    M6  myelinated (pure)    the specification: query-blind, tier-ordered
+    M7  = M6 + similarity    R1, blend query similarity into recall
+    M8  = M7 + knapsack      R4/R7, expected-value-per-character packing
+    M9  = M8 + supersession  R5, honour retire/supersede signals
+    M10 = M9 + reinforcement R2, learn from memories used in correct answers
+
+M6 through M10 are the SAME engine with capabilities switched on one at a time,
+so any improvement can be attributed to a named change instead of to "the
+engine" (board ruling BM-002).
+
+Fairness note on R5: every arm is offered the supersession signal and every
+baseline honours it by deleting the retired memory. Supersession is therefore
+not an engine advantage; it is a capability the workload can supply to any
+store, and the interesting measurement is the decay-only suite where no retire
+signal exists at all (board ruling BM-003).
+
+Arms record per-operation latency in ``add_ms`` / ``access_ms`` / ``refresh_ms``
+/ ``recall_ms`` so the report can quote real p50/p95 numbers.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+from typing import Dict, List, Optional, Sequence, Tuple
+
+from common import (
+    DEFAULT_BUDGET,
+    Arm,
+    Recall,
+    pack_blocks,
+    tokenize,
+)
+
+# The engine is a script, not an installed package: benchmark modules run with
+# benchmarks/ as the sys.path root, so add the repository's scripts/ directory.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+from myelinate import (  # noqa: E402  (path set up above)
+    MyelinatedMemory,
+    make_summary,
+    tier_for,
+)
+
+
+class TimedArm(Arm):
+    """Base arm: wraps every operation to record its latency."""
+
+    def __init__(self) -> None:
+        self.add_ms: List[float] = []
+        self.access_ms: List[float] = []
+        self.retire_ms: List[float] = []
+        self.reinforce_ms: List[float] = []
+        self.refresh_ms: List[float] = []
+        self.recall_ms: List[float] = []
+        # An arm is usable the moment it is constructed, not only after the
+        # harness calls reset() on it.
+        self.reset()
+
+    # -- public API ---------------------------------------------------------
+    def reset(self) -> None:
+        self.add_ms = []
+        self.access_ms = []
+        self.retire_ms = []
+        self.reinforce_ms = []
+        self.refresh_ms = []
+        self.recall_ms = []
+        self._reset_store()
+
+    def add(self, content: str, *, memory_id: Optional[str] = None, category: str = "general",
+            protected: bool = False, now: float = 0.0) -> str:
+        start = time.perf_counter()
+        out = self._add(content, memory_id=memory_id, category=category,
+                        protected=protected, now=now)
+        self.add_ms.append((time.perf_counter() - start) * 1000.0)
+        return out
+
+    def access(self, memory_id: str, now: float = 0.0) -> None:
+        start = time.perf_counter()
+        self._access(memory_id, now)
+        self.access_ms.append((time.perf_counter() - start) * 1000.0)
+
+    def retire(self, memory_id: str, now: float = 0.0) -> None:
+        start = time.perf_counter()
+        self._retire(memory_id, now)
+        self.retire_ms.append((time.perf_counter() - start) * 1000.0)
+
+    def reinforce(self, memory_ids: Sequence[str], now: float = 0.0) -> None:
+        start = time.perf_counter()
+        self._reinforce(memory_ids, now)
+        self.reinforce_ms.append((time.perf_counter() - start) * 1000.0)
+
+    def refresh(self, now: float = 0.0) -> None:
+        start = time.perf_counter()
+        self._refresh(now)
+        self.refresh_ms.append((time.perf_counter() - start) * 1000.0)
+
+    def recall(self, query: str, budget: int = DEFAULT_BUDGET, now: float = 0.0) -> Recall:
+        start = time.perf_counter()
+        text, used = self._recall(query, budget, now)
+        elapsed = (time.perf_counter() - start) * 1000.0
+        self.recall_ms.append(elapsed)
+        return Recall(text=text, used_ids=list(used), chars=len(text),
+                      latency_ms=elapsed, budget=budget)
+
+    # -- subclass hooks -----------------------------------------------------
+    def _reset_store(self) -> None:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def _add(self, content, *, memory_id=None, category="general", protected=False, now=0.0) -> str:
+        raise NotImplementedError  # pragma: no cover
+
+    def _access(self, memory_id, now=0.0) -> None:  # pragma: no cover - optional
+        return None
+
+    def _retire(self, memory_id, now=0.0) -> None:  # pragma: no cover - optional
+        return None
+
+    def _reinforce(self, memory_ids, now=0.0) -> None:  # pragma: no cover - optional
+        return None
+
+    def _refresh(self, now=0.0) -> None:  # pragma: no cover - optional
+        return None
+
+    def _recall(self, query, budget, now) -> Tuple[str, List[str]]:  # pragma: no cover
+        raise NotImplementedError
+
+
+# --------------------------------------------------------------------- M0
+class NoMemoryArm(TimedArm):
+    """Control: no memory at all, so the context is always empty."""
+
+    name = "M0 no-memory"
+
+    def _reset_store(self) -> None:
+        self._count = 0
+
+    def _add(self, content, *, memory_id=None, category="general", protected=False, now=0.0) -> str:
+        self._count += 1
+        return memory_id or "none-%d" % self._count
+
+    def _recall(self, query, budget, now):
+        return "", []
+
+    def size(self) -> int:
+        return 0
+
+
+# ---------------------------------------------------------------- M1 / M2
+class FlatFifoArm(TimedArm):
+    """Static store: everything is kept in insertion order, all equally ranked.
+
+    Honours supersession by deleting, because with no versioning there is
+    nothing else it could do.
+    """
+
+    name = "M1 flat/FIFO"
+    supports_retirement = True
+
+    def _reset_store(self) -> None:
+        self.items: List[Tuple[str, str]] = []
+        self._ids: Dict[str, int] = {}
+        self._counter = 0
+
+    def _add(self, content, *, memory_id=None, category="general", protected=False, now=0.0) -> str:
+        self._counter += 1
+        mem_id = memory_id or "flat-%d" % self._counter
+        self._ids[mem_id] = len(self.items)
+        self.items.append((mem_id, content))
+        return mem_id
+
+    def _retire(self, memory_id, now=0.0) -> None:
+        if memory_id in self._ids:
+            self.items = [(i, c) for i, c in self.items if i != memory_id]
+            self._ids = {i: n for n, (i, _) in enumerate(self.items)}
+
+    def _recall(self, query, budget, now):
+        text, used, _ = pack_blocks(self.items, budget)
+        return text, used
+
+    def size(self) -> int:
+        return len(self.items)
+
+
+class RecencyArm(TimedArm):
+    """LRU: the most recently stored or used memories win the budget.
+
+    Also consumes the utility-credit signal, because "use it a lot" is exactly
+    its ranking rule - so it is offered the same reinforcement as the engine.
+    """
+
+    name = "M2 recency/LRU"
+    supports_retirement = True
+    supports_reinforcement = True
+
+    def _reset_store(self) -> None:
+        self.items: Dict[str, List] = {}
+        self._counter = 0
+
+    def _add(self, content, *, memory_id=None, category="general", protected=False, now=0.0) -> str:
+        self._counter += 1
+        mem_id = memory_id or "lru-%d" % self._counter
+        self.items[mem_id] = [content, now, now]
+        return mem_id
+
+    def _access(self, memory_id, now=0.0) -> None:
+        if memory_id in self.items:
+            self.items[memory_id][2] = now
+
+    def _reinforce(self, memory_ids, now=0.0) -> None:
+        for memory_id in memory_ids:
+            self._access(memory_id, now)
+
+    def _retire(self, memory_id, now=0.0) -> None:
+        self.items.pop(memory_id, None)
+
+    def _recall(self, query, budget, now):
+        ordered = sorted(self.items.items(), key=lambda kv: (-kv[1][2], -kv[1][1], kv[0]))
+        text, used, _ = pack_blocks([(k, v[0]) for k, v in ordered], budget)
+        return text, used
+
+    def size(self) -> int:
+        return len(self.items)
+
+
+# ---------------------------------------------------------------- M3 / M4
+class Bm25Arm(TimedArm):
+    """Traditional lexical retrieval: BM25 top-k, best match first."""
+
+    name = "M3 semantic/BM25"
+    K1 = 1.2
+    B = 0.75
+    supports_retirement = True
+
+    def _reset_store(self) -> None:
+        self.docs: Dict[str, Dict] = {}
+        self._counter = 0
+        self._dirty = True
+
+    def _add(self, content, *, memory_id=None, category="general", protected=False, now=0.0) -> str:
+        self._counter += 1
+        mem_id = memory_id or "bm25-%d" % self._counter
+        self.docs[mem_id] = {
+            "content": content,
+            "tokens": tokenize(content),
+            "created": now,
+            "last_access": now,
+        }
+        self._dirty = True
+        return mem_id
+
+    def _access(self, memory_id, now=0.0) -> None:
+        if memory_id in self.docs:
+            self.docs[memory_id]["last_access"] = now
+
+    def _retire(self, memory_id, now=0.0) -> None:
+        if self.docs.pop(memory_id, None) is not None:
+            self._dirty = True
+
+    def _build(self) -> None:
+        self.lengths = {i: len(d["tokens"]) for i, d in self.docs.items()}
+        self.avgdl = (sum(self.lengths.values()) / len(self.lengths)) if self.lengths else 0.0
+        self.tfs: Dict[str, Dict[str, int]] = {}
+        df: Dict[str, int] = {}
+        for mem_id, doc in self.docs.items():
+            tf: Dict[str, int] = {}
+            for token in doc["tokens"]:
+                tf[token] = tf.get(token, 0) + 1
+            self.tfs[mem_id] = tf
+            for token in tf:
+                df[token] = df.get(token, 0) + 1
+        n = len(self.docs) or 1
+        self.idf = {t: math.log(1.0 + (n - c + 0.5) / (c + 0.5)) for t, c in df.items()}
+        self._dirty = False
+
+    def _recall(self, query, budget, now):
+        if self._dirty:
+            self._build()
+        if not self.docs:
+            return "", []
+        q_tokens = tokenize(query)
+        scored = []
+        for mem_id, doc in self.docs.items():
+            tf = self.tfs.get(mem_id, {})
+            length = self.lengths.get(mem_id, 0)
+            score = 0.0
+            for token in q_tokens:
+                f = tf.get(token)
+                if not f:
+                    continue
+                idf = self.idf.get(token, 0.0)
+                score += idf * (f * (self.K1 + 1.0)) / (
+                    f + self.K1 * (1.0 - self.B + self.B * (length / (self.avgdl or 1.0)))
+                )
+            if score > 0:
+                scored.append((score, doc["last_access"], doc["created"], mem_id))
+        scored.sort(key=lambda row: (-row[0], -row[1], -row[2], row[3]))
+        blocks = [(row[3], self.docs[row[3]]["content"]) for row in scored]
+        text, used, _ = pack_blocks(blocks, budget)
+        return text, used
+
+    def size(self) -> int:
+        return len(self.docs)
+
+
+class TfidfArm(TimedArm):
+    """Vector-space semantic memory: TF-IDF cosine similarity over the store."""
+
+    name = "M4 semantic/TF-IDF"
+    supports_retirement = True
+
+    def _reset_store(self) -> None:
+        self.docs: Dict[str, Dict] = {}
+        self._counter = 0
+        self._dirty = True
+
+    def _add(self, content, *, memory_id=None, category="general", protected=False, now=0.0) -> str:
+        self._counter += 1
+        mem_id = memory_id or "tfidf-%d" % self._counter
+        self.docs[mem_id] = {"content": content, "created": now, "last_access": now}
+        self._dirty = True
+        return mem_id
+
+    def _access(self, memory_id, now=0.0) -> None:
+        if memory_id in self.docs:
+            self.docs[memory_id]["last_access"] = now
+
+    def _retire(self, memory_id, now=0.0) -> None:
+        if self.docs.pop(memory_id, None) is not None:
+            self._dirty = True
+
+    def _build(self) -> None:
+        n = len(self.docs) or 1
+        df: Dict[str, int] = {}
+        counts: Dict[str, Dict[str, int]] = {}
+        for mem_id, doc in self.docs.items():
+            tf: Dict[str, int] = {}
+            for token in tokenize(doc["content"]):
+                tf[token] = tf.get(token, 0) + 1
+            counts[mem_id] = tf
+            for token in tf:
+                df[token] = df.get(token, 0) + 1
+        self.idf = {t: math.log((n + 1.0) / (c + 1.0)) + 1.0 for t, c in df.items()}
+        self.vecs = {}
+        self.norms = {}
+        for mem_id, tf in counts.items():
+            vec = {t: c * self.idf[t] for t, c in tf.items()}
+            self.vecs[mem_id] = vec
+            self.norms[mem_id] = math.sqrt(sum(w * w for w in vec.values()))
+        self._dirty = False
+
+    def scores(self, query: str) -> Dict[str, float]:
+        """Cosine similarity of the query against every stored memory."""
+        if self._dirty:
+            self._build()
+        if not self.docs:
+            return {}
+        q_tf: Dict[str, int] = {}
+        for token in tokenize(query):
+            q_tf[token] = q_tf.get(token, 0) + 1
+        q_vec = {t: c * self.idf.get(t, 0.0) for t, c in q_tf.items()}
+        q_norm = math.sqrt(sum(w * w for w in q_vec.values()))
+        if q_norm == 0.0:
+            return {mem_id: 0.0 for mem_id in self.docs}
+        out: Dict[str, float] = {}
+        for mem_id, vec in self.vecs.items():
+            doc_norm = self.norms.get(mem_id, 0.0)
+            if doc_norm == 0.0:
+                out[mem_id] = 0.0
+                continue
+            dot = 0.0
+            for token, weight in q_vec.items():
+                if weight:
+                    dot += weight * vec.get(token, 0.0)
+            out[mem_id] = dot / (q_norm * doc_norm)
+        return out
+
+    def _recall(self, query, budget, now):
+        sims = self.scores(query)
+        ordered = sorted(
+            self.docs.items(),
+            key=lambda kv: (-sims.get(kv[0], 0.0), -kv[1]["last_access"], kv[0]),
+        )
+        blocks = [(mem_id, doc["content"]) for mem_id, doc in ordered]
+        text, used, _ = pack_blocks(blocks, budget)
+        return text, used
+
+    def size(self) -> int:
+        return len(self.docs)
+
+
+class DenseEmbeddingArm(TfidfArm):
+    """Dense semantic memory backed by an OpenAI-compatible embeddings endpoint."""
+
+    name = "M5 semantic/dense-embeddings"
+    uses_network = True
+
+    def __init__(self, api_key: str, base_url: str, model: str, timeout: float = 60.0) -> None:
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.timeout = timeout
+        self.embeddings: Dict[str, List[float]] = {}
+        super().__init__()
+
+    @classmethod
+    def from_env(cls) -> Optional["DenseEmbeddingArm"]:
+        key = os.environ.get("OPENAI_API_KEY")
+        if not key:
+            return None
+        return cls(
+            api_key=key,
+            base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            model=os.environ.get("OPENAI_EMBED_MODEL", "text-embedding-3-small"),
+        )
+
+    def _embed(self, texts: Sequence[str]) -> List[List[float]]:
+        payload = json.dumps({"model": self.model, "input": list(texts)}).encode("utf-8")
+        request = urllib.request.Request(
+            self.base_url + "/embeddings",
+            data=payload,
+            headers={"Authorization": "Bearer %s" % self.api_key,
+                     "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError) as exc:
+            raise RuntimeError("embedding request failed: %s" % exc) from exc
+        rows = sorted(body.get("data", []), key=lambda row: row.get("index", 0))
+        return [row["embedding"] for row in rows]
+
+    def _add(self, content, *, memory_id=None, category="general", protected=False, now=0.0) -> str:
+        mem_id = super()._add(content, memory_id=memory_id, category=category,
+                              protected=protected, now=now)
+        self.embeddings[mem_id] = self._embed([content])[0]
+        return mem_id
+
+    def _retire(self, memory_id, now=0.0) -> None:
+        self.embeddings.pop(memory_id, None)
+        super()._retire(memory_id, now)
+
+    def _recall(self, query, budget, now):
+        if not self.docs:
+            return "", []
+        q_vec = self._embed([query])[0]
+        q_norm = math.sqrt(sum(v * v for v in q_vec)) or 1.0
+        scored = []
+        for mem_id, doc in self.docs.items():
+            vec = self.embeddings.get(mem_id)
+            if not vec:
+                continue
+            dot = sum(a * b for a, b in zip(q_vec, vec))
+            norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+            scored.append((dot / (q_norm * norm), doc["last_access"], mem_id))
+        scored.sort(key=lambda row: (-row[0], -row[1], row[2]))
+        blocks = [(row[2], self.docs[row[2]]["content"]) for row in scored]
+        text, used, _ = pack_blocks(blocks, budget)
+        return text, used
+
+
+# ------------------------------------------------------------ M6 - M10
+class MyelinatedArm(TimedArm):
+    """The engine from scripts/myelinate.py, in memory-only mode.
+
+    ``similarity``, ``knapsack``, ``stale_retirement`` and ``reinforcement`` are
+    independent switches so the report can attribute any gain to one change.
+    """
+
+    def __init__(self, name: str, similarity: bool = True, knapsack: bool = True,
+                 stale_retirement: bool = False, reinforcement: bool = False) -> None:
+        self.arm_name = name
+        self.use_similarity = similarity
+        self.use_knapsack = knapsack
+        self.stale_retirement = stale_retirement
+        self.reinforcement = reinforcement
+        self.supports_retirement = stale_retirement
+        self.supports_reinforcement = reinforcement
+        super().__init__()
+
+    @property
+    def name(self) -> str:
+        return self.arm_name
+
+    def _reset_store(self) -> None:
+        self.engine = MyelinatedMemory(
+            in_memory=True,
+            similarity=self.use_similarity,
+            knapsack=self.use_knapsack,
+            stale_retirement=self.stale_retirement,
+        )
+
+    def _add(self, content, *, memory_id=None, category="general", protected=False, now=0.0) -> str:
+        return self.engine.add(content, category=category, protected=protected,
+                               memory_id=memory_id, now=now)
+
+    def _access(self, memory_id, now=0.0) -> None:
+        self.engine.access(memory_id, now=now)
+
+    def _retire(self, memory_id, now=0.0) -> None:
+        if self.stale_retirement:
+            self.engine.retire(memory_id)
+
+    def _reinforce(self, memory_ids, now=0.0) -> None:
+        if self.reinforcement:
+            self.engine.reinforce(memory_ids, now=now)
+
+    def _refresh(self, now=0.0) -> None:
+        self.engine.refresh(now=now)
+
+    def _recall(self, query, budget, now):
+        result = self.engine.recall(budget=budget, now=now, query=query)
+        return result.text, result.used_ids
+
+    def size(self) -> int:
+        return self.engine.size()
+
+
+# ---------------------------------------------------------------- registry
+def build_arms(include_network: bool = False) -> List[Arm]:
+    """All arms in report order. Network arms are opt-in."""
+    arms: List[Arm] = [
+        NoMemoryArm(),
+        FlatFifoArm(),
+        RecencyArm(),
+        Bm25Arm(),
+        TfidfArm(),
+    ]
+    if include_network:
+        dense = DenseEmbeddingArm.from_env()
+        if dense is not None:
+            arms.append(dense)
+    arms.extend([
+        MyelinatedArm("M6 myelinated (pure)", similarity=False, knapsack=False),
+        MyelinatedArm("M7 myelinated +similarity", similarity=True, knapsack=False),
+        MyelinatedArm("M8 myelinated +knapsack", similarity=True, knapsack=True),
+        MyelinatedArm("M9 myelinated +supersession", similarity=True, knapsack=True,
+                      stale_retirement=True),
+        MyelinatedArm("M10 myelinated +reinforcement", similarity=True, knapsack=True,
+                      stale_retirement=True, reinforcement=True),
+    ])
+    return arms
+
+
+ARM_ORDER = [
+    "M0 no-memory",
+    "M1 flat/FIFO",
+    "M2 recency/LRU",
+    "M3 semantic/BM25",
+    "M4 semantic/TF-IDF",
+    "M5 semantic/dense-embeddings",
+    "M6 myelinated (pure)",
+    "M7 myelinated +similarity",
+    "M8 myelinated +knapsack",
+    "M9 myelinated +supersession",
+    "M10 myelinated +reinforcement",
+]
+
+
+def arm_names() -> List[str]:
+    return list(ARM_ORDER)
+
+
+if __name__ == "__main__":
+    arms = build_arms()
+    print("arms:", ", ".join(a.name for a in arms))
+    assert len(arms) == 10, "expected 10 offline arms, got %d" % len(arms)
+    assert all(hasattr(a, "recall_ms") for a in arms)
+    print("engines ok")

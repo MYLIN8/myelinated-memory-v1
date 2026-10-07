@@ -1,0 +1,78 @@
+name: Bug report
+description: The engine, the CLI or the harness behaves differently from the way it is documented
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project publishes its own negative results, so a precise report is worth more than a reassuring one.
+        Before filing, check the tracked defects in `docs/FIX-PLAN.md` (D1, D13, D14 are known and live) and the
+        `KNOWN DEFECT` lines printed by `python3 benchmarks/test_engine.py`.
+
+  - type: input
+    id: command
+    attributes:
+      label: Exact command
+      description: Copy it verbatim, including `--store`, `--query`, `--budget` and any `--pure` flag.
+      placeholder: python3 scripts/myelinate.py --store /tmp/p.json recall --query "where do we deploy?" --budget 2200
+    validations:
+      required: true
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python version
+      description: The output of `python3 -V`.
+      placeholder: Python 3.10.12
+    validations:
+      required: true
+
+  - type: dropdown
+    id: store
+    attributes:
+      label: Which store was used
+      description: Most reports here are "the recall output is wrong", and the store is what makes them reproducible.
+      options:
+        - A custom --store path (no personal data involved)
+        - HERMES_MEMORY_STORE
+        - The default ~/.hermes/memory/myelinated.json
+        - in_memory=True via the Python API or a test
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: What happened
+      description: The observed output, or the failing command with its exit code.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      description: If a document promised the behaviour, name the file and the line (README.md, SKILL.md, docs/HOW-IT-WORKS.md).
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: A short script or command sequence that starts from an empty --store path.
+      render: python
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before filing
+      options:
+        - label: I ran the offline checks and this is not one of the registered `KNOWN DEFECT` lines.
+          required: true
+        - label: I did not paste the contents of a personal memory store.
+          required: true

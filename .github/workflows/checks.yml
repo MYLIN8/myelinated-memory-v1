@@ -1,0 +1,58 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-checks:
+    name: offline checks (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # There is nothing to install: the engine and the harness are stdlib-only.
+
+      - name: Statistics (benchmarks/stats.py)
+        run: python3 benchmarks/stats.py
+
+      - name: Arm registry (benchmarks/engines.py)
+        run: python3 benchmarks/engines.py
+
+      - name: Judge semantics (benchmarks/judge.py)
+        run: python3 benchmarks/judge.py
+
+      - name: Stub LLM protocol (benchmarks/stub_llm.py)
+        run: python3 benchmarks/stub_llm.py
+
+      - name: Scenario fixtures (benchmarks/synthetic.py)
+        run: python3 benchmarks/synthetic.py
+
+      - name: LLM judge protocol (benchmarks/test_llm_judge.py)
+        run: python3 benchmarks/test_llm_judge.py
+
+      - name: Engine suite (benchmarks/test_engine.py)
+        run: python3 benchmarks/test_engine.py
+
+      - name: Compile every module
+        run: python3 -m py_compile scripts/myelinate.py benchmarks/*.py
+
+      - name: What this job deliberately does not run
+        run: |
+          echo "run_bench.py is not run here: it rewrites the committed benchmarks/RESULTS.md"
+          echo "and takes ~37 s. The LLM judge and the dense-embedding arm need a key and are opt-in."

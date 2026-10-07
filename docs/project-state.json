@@ -1,0 +1,425 @@
+{
+  "schema": 1,
+  "project": "myelinated-memory",
+  "updated": "2026-10-07",
+  "source_of_truth": "This file. Conversation history is not state.",
+  "mission": "Make Myelinated Memory beat, or close the measured gap to, semantic memory - and report honestly if it cannot.",
+  "ownership": {
+    "chief_of_staff": "Orchestrator: intake, challenge, delegate, board meetings, verdicts",
+    "engineering": ["scripts/myelinate.py", "benchmarks/engines.py", "benchmarks/run_bench.py", "benchmarks/common.py"],
+    "research": ["benchmarks/metrics.py", "benchmarks/stats.py", "benchmarks/synthetic.py", "benchmarks/RESULTS.md", "docs/REMEDIATION.md"],
+    "product": ["README.md", "docs/REMEDIATION.md", "SKILL.md"],
+    "sales_marketing": []
+  },
+  "heads_note": "Round 2: Sales & Marketing was mapped but had NO work; recorded rather than inventing activity, with a 2-analyst pod because the work was 3 tightly coupled files. Round 3 (this request): a review pod of 4 analysts was run in parallel, one per angle (engine internals, harness/statistics, product claims and interface drift, competitive/systems fairness), and every load-bearing finding was re-derived by the coordinator with its own probe before it entered the plan. Sales & Marketing now has real, non-invented work (W10: positioning, a choose-this-if table, and the skill's trigger description), so it is no longer an empty department. Round 3.5 (this request): an offline self-test pass with no API key re-ran every check, re-derived each live defect, and found six more (D13-D18); the ordered fix plan is docs/FIX-PLAN.md, the two engine-testable ones are registered in test_engine.py, and the pass changed no engine or harness behaviour.",
+  "phase": "round-3.5-fix-plan-proposed-awaiting-the-six-P0-fixes",
+  "round3_plan": {
+    "artifact": "docs/PLAN.md",
+    "produced_by": "head of staff: intake -> 4 analyst pods in parallel -> coordinator re-verified every load-bearing claim -> plan",
+    "principle": "measurement integrity first: no engine claim is measured with the instruments Gate 0 repairs",
+    "gates": {
+      "gate0_measurement": ["W0.1 fix compounding decay", "W0.2 honest latency (>=50 warm queries, cold start separate)", "W0.3 un-mix the leak column + kill the %% literal", "W0.4 score only measured criteria", "W0.5 judge-limit must not fake zeros", "W0.6 require both flat arms", "W0.7 invalidate the similarity index on retire", "W0.8 engine regression suite (the engine has no automated check today)", "W0.9 metric and verdict fixtures", "W0.10 harness invariants (replay determinism, budget guarantee)"],
+      "gate1_attribution_and_engine": ["W1.1 control arm M3p = BM25 + the engine's packer", "W1.2 control arm M11 = M8 with PRIOR_WEIGHT=0", "W2 latency: postings + rebuild on the session boundary", "W3 ingest: lazy closed-form decay, _cluster off the hot path, tokenise once", "W4 resolve the decay claim per BM-009", "W5 rank order separately from packing order", "W6 seeds + parameterised staleness generator + printed power floors"],
+      "gate2_product": ["W7 make SKILL.md truthful", "W8 claims register to zero UNSUPPORTED", "W9 LLM judge (blocked on key)", "W10 positioning + choose-this-if table"]
+    },
+    "definition_of_done": "Gate 0 closed; M3p and M11 reported; the decay claim either proven with a retrieval floor or formally retired; every criterion pre-registered before its run; no README sentence without a supporting report row.",
+    "kill_criteria": "If the ranking is still worse than plain cosine and any ranker with the same packer reproduces the budget win, myelination is demoted from a retrieval claim to an allocation/consolidation feature.",
+    "second_review_testing_and_tuning": {
+      "artifact": "docs/TESTING.md",
+      "pods": "3 independent read-only briefs: testing coverage, constant provenance, metric correctness. One pod wrote files despite the brief; every claim of its that reached a document was re-derived by the coordinator before publication, and its unverified stopword-asymmetry flag was closed by another pod after checking the code.",
+      "delivered": ["benchmarks/test_engine.py (W0.8: 69 checks, green, known-defect registry for W0.1 and W0.7)", "benchmarks/tune_probe.py (sweep harness; never writes the report)", "docs/TESTING.md (inventory, coverage map, ranked gaps, protocol, sweep list)"],
+      "headline_finding": "The engine had no automated check at all while holding every real defect; and the one constant now measured - PRIOR_WEIGHT - is hand-set at 0.35, which is the second-worst point on its own sweep curve. At 0.00 the same engine scores 0.893 hit rate (vs 0.825), 0.672 nDCG (vs 0.606), 1265 chars/hit (vs 1589) and 0.683 on LoCoMo (vs 0.400).",
+      "status": "exploratory only: one seed, swept on the report's own 206 queries, not pre-registered. The confirmatory criterion is frozen in W1.2 and nothing on the front page changes until a hold-out run passes it."
+    }
+  },
+  "round3_5_fix_plan": {
+    "artifact": "docs/FIX-PLAN.md",
+    "produced_by": "head of staff self-test pass: run every offline check -> reproduce each registered defect -> probe for unregistered ones -> sequence the fixes by cost of leaving them",
+    "key_constraint": "no OPENAI_API_KEY, so no LLM-judged run and no dense-embeddings arm; everything else in the plan is offline, free and proven by the commands in the document",
+    "verified_green": ["stats", "engines", "judge", "stub_llm", "synthetic", "test_llm_judge (22 assertions)", "test_engine (69 checks, 4 registered defects)", "py_compile clean"],
+    "reproduced_defects": [
+      "D1 day 7 = 0.259026 (compounded) vs 0.486351 (documented); matches d(d+1)/2 for d = 1..30; day 30 = 0.000001",
+      "D3 22 stale records = 14 curated + 2 synthetic contradiction + 3 supersession + 3 decay-only; M9 mixed 0.864",
+      "D4 a scoped run prints '3 of 7' and scores the scale criterion it never measured",
+      "D7 downgrade() has one definition and zero callers",
+      "D9 the retired id is still scored (0.6027 before and after); a forced rebuild drops it",
+      "D10 the documented recall is query-blind; --pure --query silently ignores the query; recall --pure exits 2",
+      "D11 urllib.request in engines.py:441, judge.py:185, public_locomo.py:68 vs SECURITY.md 'No network calls'",
+      "D12 the '20%%' literal is still generated at run_bench.py:298 and still present in RESULTS.md and raw.json"
+    ],
+    "checked_sound": [
+      "the budget invariant holds in all 10 combinations (budgets 0/50/500/2200/5000 x both recall paths, with and without a query)",
+      "save() is atomic via os.replace; load() filters unknown fields and marks the similarity index dirty"
+    ],
+    "new_defects": {
+      "D13": "an update >= 0.9 similar to a RETIRED memory is absorbed by it and lost: probe add -> retire -> add a one-word change returns the retired id, stores no new text, and recall returns []",
+      "D14": "the same threshold against a live memory discards the newer wording with no signal",
+      "D15": "a scoped run overwrites the committed report (152 lines vs 172), verified in a throwaway copy so the committed report itself was untouched",
+      "D16": "judge errors are scored as 0.0 and no judged/skipped/errored count is published",
+      "D17": "a literal [:48] query-term truncation inside similarity_scores() is a hidden ranking parameter, absent from the tuning inventory",
+      "D18": "pin() accepts a retired memory; _prune() cannot honour --max-entries and reports no shortfall; the CLI's recall rewrites the store on a read; _exact_two_sided_p ignores w_minus"
+    },
+    "first_six": [
+      "F1 a scoped run must not clobber RESULTS.md",
+      "F2 exclude retired memories from duplicate candidates",
+      "F3 keep an update and report what the merge did",
+      "F4 kill the %% literal in the generator",
+      "F9 score only measured criteria",
+      "F10 judge-limit and judge errors must not fake zeros"
+    ],
+    "unchanged": "no engine or harness behaviour changed by this pass: docs/FIX-PLAN.md, the D13/D14 registry entries in benchmarks/test_engine.py, and cross-references in PLAN.md, README.md and this file are the whole diff"
+  },
+  "round2_measurement_status": "Round 2's tables reproduce exactly (4 of 7, M8 0.825, 1589 chars/hit) but four of its instruments are now known to be unsound: decay compounds, the reported p95 is the max of five queries, the headline leak column mixes 22 records (16 with no retire signal), and the budget comparison pits the engine's packer against truncating baselines. Decay figures from rounds 1-2 are superseded by W0.1.",
+  "rounds": {
+    "round1": {
+      "command": "python3 benchmarks/run_bench.py (oracle judge, 27 scenarios, 200 queries)",
+      "verdict": "2 of 5 criteria passed",
+      "engine_hit_rate": 0.67,
+      "best_semantic_hit_rate": 0.87,
+      "engine_chars_per_hit": 1867,
+      "flat_chars_per_hit": 1718,
+      "ingest_10k_s": 12.5,
+      "refresh_10k_s": 7.0,
+      "stale_leak_rate": 1.0
+    },
+    "round2": {
+      "command": "python3 benchmarks/run_bench.py (oracle judge, 33 scenarios, 206 queries)",
+      "verdict": "4 of 7 criteria passed",
+      "pure_hit_rate": 0.65,
+      "best_engine_arm": "M8 myelinated +knapsack",
+      "best_engine_hit_rate": 0.825,
+      "best_semantic_hit_rate": 0.874,
+      "gap_before_points": 22.4,
+      "gap_after_points": 4.9,
+      "best_engine_chars_per_hit": 1589,
+      "flat_chars_per_hit": 1734,
+      "ingest_10k_s": 4.4,
+      "refresh_10k_s": 2.5,
+      "leak_with_supersession": 0.0,
+      "leak_decay_only": 1.0
+    }
+  },
+  "open_items": [
+    {
+      "id": "R8",
+      "title": "Fix ingest cost",
+      "status": "done_target_missed",
+      "result": "12.5s -> 4.4s per 10,000 memories (2.9x faster). Target was <1.0s; NOT met and reported as a miss.",
+      "evidence": "cProfile before: jaccard 2,859,706 calls / 5.36s, could_match 8.24M calls. After: jaccard 735,455 calls. Cause: token-postings candidate scan replaced by a MinHash bottom-8 sketch index."
+    },
+    {
+      "id": "STALE",
+      "title": "Fix staleness",
+      "status": "partially_done",
+      "result": "With an explicit retire signal the engine leaks 0.000 (was 1.000). With NO retire signal, decay alone still leaks 1.000 - the decay claim remains UNPROVEN.",
+      "evidence": "benchmarks/RESULTS.md 'Staleness: supersession vs decay alone'; two suites derived from one builder so they cannot drift."
+    },
+    {
+      "id": "LLM",
+      "title": "Add an LLM judge",
+      "status": "blocked_on_secret",
+      "result": "Judge implemented and its protocol verified end-to-end against a local OpenAI-protocol stub (22 assertions, no key needed). Real LLM-judged numbers still require OPENAI_API_KEY in Settings -> Environment.",
+      "evidence": "python3 benchmarks/test_llm_judge.py -> 'llm judge ok: 22 assertions'"
+    },
+    {
+      "id": "R1",
+      "title": "Query-aware recall in the engine",
+      "status": "done",
+      "result": "hit rate 0.650 -> 0.796"
+    },
+    {
+      "id": "R4R7",
+      "title": "Value-per-char packing + content gist instead of id stub",
+      "status": "done",
+      "result": "hit rate 0.796 -> 0.825; chars/hit 1651 -> 1589. R7 fixed the LoCoMo tier (0.100 -> 0.400 hit rate) by making archived memories readable."
+    },
+    {
+      "id": "R5",
+      "title": "Supersession",
+      "status": "done_not_an_advantage",
+      "result": "leak 1.000 -> 0.000 with a retire signal, but every baseline can do this by deleting, so it is not a myelination advantage."
+    },
+    {
+      "id": "R2",
+      "title": "Utility-credit reinforcement",
+      "status": "done_net_negative",
+      "result": "hit rate 0.825 -> 0.801, task success 0.553 -> 0.534. Rewards proximity, not causation."
+    },
+    {
+      "id": "R3",
+      "title": "Spaced-repetition decay",
+      "status": "not_started",
+      "note": "Now the highest-value item: decay-only leak is still 1.000."
+    },
+    {
+      "id": "R6",
+      "title": "Auto-tune decay constants",
+      "status": "not_started",
+      "note": "Reviewed in docs/TESTING.md 5. Of ~20 engine constants, only SKETCH_SIZE/BAND_ROWS/MAX_POSTINGS_SCAN were chosen by measurement; DUPLICATE_JACCARD was measured off-benchmark only; the rest are hand-set ASSUMPTIONs. Ranked sweeps: PRIOR_WEIGHT (decides the headline ranking deficit; also scheduled as W1.2), then DETAIL_VALUE with the summary/gist caps together, then the tier thresholds, then DUPLICATE_JACCARD on the benchmark corpus, then RECALL_POOL, then the decay rates only after W0.1, then the sketch caps against ingest cost.",
+      "blocked_by": "W0.1 (tuning decay against a compounding implementation fits the bug) and W6 (one seed today, so nothing is out-of-sample)"
+    },
+    {
+      "id": "TEST-GAP",
+      "title": "The engine has no automated checks",
+      "status": "reviewed_suite_proposed_not_implemented",
+      "result": "scripts/myelinate.py ends at sys.exit(main()) with zero assertions; common.py, metrics.py and run_bench.py have no __main__ either. The ~48 existing assertions test the harness only (stats 12, stub 5, judge 7, engines 2, test_llm_judge 22) plus synthetic.py's scenario validator. Four shipped defects live in the untested file: compounding decay, retire() not invalidating the similarity index, double tokenisation on add(), and a clustering pass whose output nothing reads.",
+      "evidence": "docs/TESTING.md 1-4 with the exact proposed assertions; three of them fail against today's code by design, because they document live defects"
+    },
+    {
+      "id": "R9",
+      "title": "Cache the similarity index",
+      "status": "not_started",
+      "note": "Query-aware recall is 115.8ms 'p95' at 10k vs BM25's 47.3ms in the current run; the pure engine is 10.5ms. The figure is the maximum of five queries and one of them pays a one-off index rebuild (probe: 69.5/15.5/14.5/14.4/13.9 ms), so W0.2 must stabilise the measurement before W2 claims an improvement."
+    }
+  ],
+  "board_meetings": [
+    {
+      "id": "BM-002",
+      "date": "2026-10-07",
+      "trigger": "Disagreement on how to satisfy 'beat semantic memory' without rigging the test",
+      "positions": {
+        "engineering": "Bake query similarity into engine.recall(); the hybrid is the product.",
+        "research": "That silently redefines the claim. A spec-faithful engine must stay measurable separately or the result is unattributable.",
+        "product": "Ship the version that performs, and say plainly which configuration is recommended."
+      },
+      "verdict": "Keep BOTH. M6 pure remains the spec-faithful baseline; improvements ship as named ablation arms M7-M10.",
+      "status": "ratified_and_implemented"
+    },
+    {
+      "id": "BM-003",
+      "date": "2026-10-07",
+      "trigger": "Staleness is a product capability, not a decay fix",
+      "positions": {
+        "product": "Add explicit supersession; that is what actually retires a stale fact.",
+        "research": "Supersession is a new feature. It does not demonstrate that decay retires stale facts; report them separately or drop the claim.",
+        "engineering": "Both are cheap; measure them as two distinct metrics."
+      },
+      "verdict": "Implement supersession AND report decay-only staleness as its own number. Never present a supersession win as a decay win.",
+      "status": "ratified_and_implemented",
+      "outcome": "Upheld by the data: supersession leaks 0.000, decay-only leaks 1.000."
+    },
+    {
+      "id": "BM-004",
+      "date": "2026-10-07",
+      "trigger": "The pre-registered hero arm M10 measured WORSE than M8/M9 after the run",
+      "positions": {
+        "engineering": "Swap the hero to M8; it is the configuration we would actually recommend.",
+        "research": "Swapping the hero after seeing the numbers is exactly what pre-registration exists to prevent.",
+        "product": "Report both: keep the pre-registered arm honest and name the best configuration explicitly."
+      },
+      "verdict": "The hero stays M10 at its measured value. The report adds a separate, clearly-labelled criterion for the best measured configuration (M8). No post-hoc swapping.",
+      "status": "ratified_and_implemented"
+    },
+    {
+      "id": "BM-005",
+      "date": "2026-10-07",
+      "trigger": "Supersession could be wired so that only the engine honours the retire signal",
+      "positions": {
+        "engineering": "Only the engine has versioning; baselines have nothing to do with a retire event.",
+        "research": "Then the staleness 'win' is an artifact of the harness, not a result.",
+        "product": "An unfair win is worse than a loss; it destroys the benchmark's credibility."
+      },
+      "verdict": "Every arm is offered the retire signal and every baseline honours it by deleting. Supersession is therefore explicitly reported as NOT an engine advantage, and the decay-only suite carries the real question.",
+      "status": "ratified_and_implemented"
+    },
+    {
+      "id": "BM-006",
+      "date": "2026-10-07",
+      "trigger": "The decay path compounds (arithmetic bug) - fix silently or treat as a protocol change?",
+      "positions": {
+        "engineering": "Fix it and move on; it is a one-line delta.",
+        "research": "It invalidates every decay-dependent number in rounds 1-2, including the R7 gist decision that was made because everything decayed to archived.",
+        "product": "A silently different decay curve with unchanged numbers is exactly how a benchmark loses credibility."
+      },
+      "verdict_proposed": "Fix it, label it, re-measure every decay-dependent table, and mark rounds 1-2 decay figures superseded. No silent arithmetic fix.",
+      "status": "proposed_pending_ratification"
+    },
+    {
+      "id": "BM-007",
+      "date": "2026-10-07",
+      "trigger": "The measured 'budget efficiency win' compares the engine's packer against baselines that fill the budget with full text",
+      "positions": {
+        "product": "Keep the claim; it is the configuration users run.",
+        "research": "The two systems do not share a packer, so a packer win is unattributable to the store.",
+        "engineering": "The control is cheap - common.downgrade() already exists and has no callers."
+      },
+      "verdict_proposed": "Run the control arm (BM25 ranked, packed by the engine's allocator) first; if it matches M8, restate the win as allocation rather than store quality.",
+      "status": "proposed_pending_ratification"
+    },
+    {
+      "id": "BM-008",
+      "date": "2026-10-07",
+      "trigger": "The significance criterion passed on one of two flat arms while the other beat the hero",
+      "positions": {
+        "research": "A criterion that passes if either comparator is beaten is a coin flip dressed as evidence.",
+        "product": "Report both and require both."
+      },
+      "verdict_proposed": "The criterion requires BOTH flat arms to be beaten; both diffs and p-values are printed. Today the PASS is attributed to M2 while M1 flat/FIFO scored higher than the hero (0.558 vs 0.534, p=0.625).",
+      "status": "proposed_pending_ratification"
+    },
+    {
+      "id": "BM-009",
+      "date": "2026-10-07",
+      "trigger": "The decay criterion is passable by retrieving nothing",
+      "positions": {
+        "engineering": "A score floor flips the leak.",
+        "research": "A floor trades long-horizon recall (the continuity suite asks day-0 facts at day 45) and today M0, M2 and M6 all 'pass' with hit_rate_decay_only 0.000.",
+        "product": "An unearnable claim should be retired, not decorated."
+      },
+      "verdict_proposed": "Gate every leak criterion on a retrieval floor (hit_rate_decay_only >= 0.9 x flat) and assert M0 fails it; if decay-only leak is still above 0.5 after the arithmetic fix, formally retire the 'decay retires stale facts' claim and ship contradiction-detection (auto-retire on a conflicting same-subject update) as the labelled capability instead. BM-003 said a supersession win is never a decay win; this adds the converse.",
+      "status": "proposed_pending_ratification"
+    },
+    {
+      "id": "BM-010",
+      "date": "2026-10-07",
+      "trigger": "What may be claimed publicly after the review",
+      "positions": {
+        "product": "Ship the strongest true claim.",
+        "research": "Task success is judged by an evidence-containment oracle; the top two arms differ by 0.010 (TF-IDF 0.563 vs 0.553), which is smaller than any plausible judge noise."
+      },
+      "verdict_proposed": "No claim ships without a supporting row in benchmarks/RESULTS.md; task-success claims are blocked until a language model judges. The 'fastest recall in the suite' wording is removed (a flat store answers in 0.60 ms p95).",
+      "status": "proposed_pending_ratification"
+    }
+  ],
+  "verification_trace": [
+    {
+      "claim": "Ingest cost was dominated by duplicate candidate comparison, not decay",
+      "evidence": "cProfile over 10,000 adds + 60 refreshes: jaccard 2,859,706 calls / 5.357s tottime; _find_duplicate 12.004s cumulative; could_match 8,243,069 calls",
+      "tool": "python3 cProfile via run_terminal_command"
+    },
+    {
+      "claim": "Ingest is now 4.4s per 10,000 memories (was 12.5s)",
+      "evidence": "benchmarks/results/raw.json scale rows: M8 ingest_s 4.371, refresh_total_s 2.480; round 1 recorded 13.489s",
+      "tool": "python3 benchmarks/run_bench.py"
+    },
+    {
+      "claim": "Near-duplicate collapsing keeps 97.5% recall at Jaccard 0.96 with no false merges",
+      "evidence": "Calibrated probe: 400 near-duplicate pairs -> 97.5% collapsed; negative control of 500 unrelated memories -> 500 added as new (0 false merges)",
+      "tool": "python3 probe via run_terminal_command"
+    },
+    {
+      "claim": "An earlier 55.6% dedupe recall figure was an artifact of the probe corpus, not a product defect",
+      "evidence": "The probe used a 24-word vocabulary with 12-word memories, so ~600 memories shared every index key and no prefix scan could find a match. Reliability was re-measured on realistic long text instead. Recorded because the first number was reported and then withdrawn.",
+      "tool": "python3 diagnostic via run_terminal_command"
+    },
+    {
+      "claim": "LSH banding with 2-hash bands lost ~37% of true near-duplicates",
+      "evidence": "Collapse rate 62.6% at Jaccard 0.929; diagnosed as one token entering the bottom-k sketch shifting every consecutive band at once. Fixed by single-hash keys (BAND_ROWS=1).",
+      "tool": "python3 probe via run_terminal_command"
+    },
+    {
+      "claim": "The LLM judge protocol works without an API key",
+      "evidence": "python3 benchmarks/test_llm_judge.py -> 'llm judge ok: 22 assertions' covering request shape, JSON parsing, caching, HTTP-500 error handling and judge selection",
+      "tool": "run_terminal_command"
+    },
+    {
+      "claim": "No LLM API key is available, so real LLM-judged numbers cannot be produced here",
+      "evidence": "freebuff-env list returned files:{}",
+      "tool": "freebuff-env list"
+    },
+    {
+      "claim": "The configured engine closes the retrieval gap to within 4.9 hit-rate points",
+      "evidence": "benchmarks/RESULTS.md decision rule: 'Best measured engine configuration reaches within 5 hit-rate points of the best semantic arm - M8 at 0.825, M4 TF-IDF leads by -0.049'",
+      "tool": "python3 benchmarks/run_bench.py"
+    },
+    {
+      "claim": "Decay alone does not retire stale facts",
+      "evidence": "benchmarks/RESULTS.md staleness table: leak_decay_only = 1.000 for M7/M8/M9/M10 and for flat/FIFO and BM25; M6 pure shows 0.000 only because it retrieves nothing (hit_rate_decay_only 0.000)",
+      "tool": "python3 benchmarks/run_bench.py"
+    },
+    {
+      "claim": "The decay path compounds: refresh() applies exp(-rate x days_since_last_access) every session while last_access does not advance",
+      "evidence": "Probe over 7 daily refreshes: observed 0.582267/0.548359/0.501162/0.444491/0.382577/0.319555/0.259026, matching INITIAL_SCORE*exp(-rate*d*(d+1)/2) on every day and NOT the documented per-day rule (which would be 0.486351 at day 7). docs/HOW-IT-WORKS.md 2 documented behaviour the code does not have; that page was corrected in round 3 (it now says time-since-last-use and carries the D1 warning).",
+      "tool": "python3 probe via run_terminal_command"
+    },
+    {
+      "claim": "The reported 'p95' is the maximum of five queries and is dominated by a one-off index rebuild",
+      "evidence": "run_bench.scale_rows pct(0.95) indexes int(0.95*5)=4 over 5 samples; direct probe at 10k: per-query recall 69.5, 15.5, 14.5, 14.4, 13.9 ms, cold rebuild 66.1 ms, warm similarity scan 6.9 ms. Identical code measured M8 93.4 then 115.8 ms and BM25 59.3 then 47.3 ms across runs.",
+      "tool": "python3 probe via run_terminal_command"
+    },
+    {
+      "claim": "The headline stale_leak_rate column mixes 22 records, 16 of which carry no retire signal",
+      "evidence": "Counted from raw.json for M9: 14 curated contradiction + 2 synthetic contradiction + 3 supersession + 3 decay-only = 22; the mixed column reproduces exactly (M9 19/22 = 0.864, M2 and M6 16/22 = 0.727). The curated contradiction scenarios emit add/access only, so no arm is ever offered a retire signal there.",
+      "tool": "python3 analysis of benchmarks/results/raw.json"
+    },
+    {
+      "claim": "The budget-efficiency comparison is between the engine's packer and baselines that truncate at full text",
+      "evidence": "FlatFifo/Recency/BM25/TF-IDF/Dense all end in common.pack_blocks with full content; the engine renders TIER_DETAILS and packs by value/char in _recall_knapsack. grep -rn downgrade benchmarks/*.py -> one definition in common.py, zero callers, so the fairness control is cheap.",
+      "tool": "grep + inspection via run_terminal_command"
+    },
+    {
+      "claim": "The invocation SKILL.md documents is not the configuration the report measures",
+      "evidence": "recall without --query returns the query-blind ordering while recall --query leads with the relevant memory; 'recall --pure' is an argparse error because --pure is global; --pure --query silently ignores the query; the skill's add examples never set --category so every skill-written memory is 'general' (0.030/day).",
+      "tool": "python3 scripts/myelinate.py ... via run_terminal_command"
+    },
+    {
+      "claim": "The engine has no automated check, and the metric definitions and decision rule are untested too",
+      "evidence": "Read every module: scripts/myelinate.py ends at sys.exit(main()) with no assertions; benchmarks/common.py ends at arm_size(); metrics.py ends at _cell(); run_bench.py ends at main(). stats.py (~12 asserts), judge.py (7), engines.py (2), stub_llm.py (5), test_llm_judge.py (22) and synthetic.py's scenario validator are the whole suite, and none of them instantiates the engine.",
+      "tool": "file inspection with read_files (no terminal available in this session; nothing was executed)"
+    },
+    {
+      "claim": "Almost nothing in the engine has been tuned; PRIOR_WEIGHT is the hand-set value that visibly costs ranking quality",
+      "evidence": "Constant survey in docs/TESTING.md 5: measured provenance only for SKETCH_SIZE/BAND_ROWS/MAX_POSTINGS_SCAN (and DUPLICATE_JACCARD off-benchmark). Same TF-IDF cosine ranker scores nDCG 0.729 as a baseline (M4), 0.690 with PRIOR_WEIGHT=0.35 blended in (M7) and 0.606 after packing reorders (M8) - consistent with the prior and the allocator both costing rank position.",
+      "tool": "file inspection with read_files + committed benchmarks/RESULTS.md (no terminal in this session)"
+    },
+    {
+      "claim": "The engine now has a regression suite and it is green: 69 checks, with the two live defects registered rather than failing the run",
+      "evidence": "python3 benchmarks/test_engine.py -> 'engine ok: 69 checks' + 'KNOWN DEFECT W0.1 decay compounds (rate x d(d+1)/2 instead of rate x d)' + 'KNOWN DEFECT W0.7 retire() does not invalidate the similarity index'; exit code 0. The registry asserts each defect's signature, so an unrelated code change is reported rather than silently passing.",
+      "tool": "python3 benchmarks/test_engine.py via run_terminal_command"
+    },
+    {
+      "claim": "The hand-set PRIOR_WEIGHT costs more than the whole distance to semantic retrieval on this workload",
+      "evidence": "python3 benchmarks/tune_probe.py, 206 queries, seed 0, all four tiers, sweep of {0, 0.1, 0.2, 0.35, 0.5, 1.0}. Control holds: the 0.35 row reproduces the committed M8 numbers exactly (hit 0.825, nDCG 0.606, chars/hit 1589, LoCoMo 0.400). At 0.00: hit 0.893, nDCG 0.672, chars/hit 1265, LoCoMo 0.683; at 0.10: hit 0.898. Task success is flat within oracle noise (0.539-0.553). Exploratory: one seed, on-workload, not pre-registered, so no published claim changes until W1.2's hold-out run.",
+      "tool": "python3 benchmarks/tune_probe.py via run_terminal_command"
+    },
+    {
+      "claim": "Every offline check passes today, and the engine suite is green with four registered defects",
+      "evidence": "stats, engines, judge, stub_llm, synthetic, test_llm_judge, test_engine all exit 0; py_compile clean. test_engine prints 'engine ok: 69 checks' plus KNOWN DEFECT W0.1, W0.7, D13, D14.",
+      "tool": "run_terminal_command (the full offline battery)"
+    },
+    {
+      "claim": "A scoped benchmark run overwrites the committed report with a partial one",
+      "evidence": "In a throwaway copy of the repo, 'run_bench.py --tier staleness --skip-scale' exited 0 and rewrote benchmarks/RESULTS.md to 152 lines (the committed full report is 172), with 6 queries, 0 scale rows and a verdict of '3 of 7'. The real repo's report md5 was unchanged only because the test ran in the copy - run in place, that command deletes the published benchmark.",
+      "tool": "run_terminal_command in a temp copy + md5sum of the committed report"
+    },
+    {
+      "claim": "An update that is >= 0.9 similar to a retired memory is absorbed by that entry and lost",
+      "evidence": "Probe: A and B are 19 unique tokens differing in one word (Jaccard exactly 0.900). add(A) -> retire(old) -> add(B) returned the retired id (new == old), the entry stayed retired, B's wording was absent from stored content, and recall(query='where is the deploy target') returned used_ids == [] with chars 0. The benchmark cannot see this because synthetic.py keeps stale/evidence pairs below the collapse threshold on purpose. Now registered in benchmarks/test_engine.py as KNOWN DEFECT D13.",
+      "tool": "python3 probe via run_terminal_command"
+    },
+    {
+      "claim": "The budget invariant holds on both recall paths at every budget tested",
+      "evidence": "40 memories, use_similarity True/False x query present/absent x budgets 0/50/500/2200/5000: chars <= budget in all 10 combinations.",
+      "tool": "python3 probe via run_terminal_command"
+    },
+    {
+      "claim": "D12 was never actually fixed at the source",
+      "evidence": "grep -n '20%%' benchmarks/run_bench.py -> line 298 (still generated); 1 occurrence in benchmarks/RESULTS.md and 1 in benchmarks/results/raw.json. The README's criterion cell was reworded, the generator was not, and the artefacts have not been regenerated.",
+      "tool": "grep via run_terminal_command"
+    }
+  ],
+  "artifacts": [
+    "scripts/myelinate.py",
+    "benchmarks/RESULTS.md",
+    "benchmarks/results/raw.json",
+    "benchmarks/run_bench.py",
+    "benchmarks/engines.py",
+    "benchmarks/common.py",
+    "benchmarks/metrics.py",
+    "benchmarks/stats.py",
+    "benchmarks/synthetic.py",
+    "benchmarks/scenarios.py",
+    "benchmarks/public_locomo.py",
+    "benchmarks/judge.py",
+    "benchmarks/stub_llm.py",
+    "benchmarks/test_llm_judge.py",
+    "benchmarks/test_engine.py",
+    "benchmarks/tune_probe.py",
+    "docs/REMEDIATION.md",
+    "docs/PLAN.md",
+    "docs/TESTING.md",
+    "docs/FIX-PLAN.md",
+    "docs/HOW-IT-WORKS.md",
+    "README.md"
+  ]
+}

@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 420" width="960" height="420" role="img">
+  <title>Myelinated Memory: the session-boundary pass and the recall ladder</title>
+  <desc>Left: refresh() runs four ordered steps - decay each memory by category, consolidate near-duplicates at Jaccard 0.90 or above with the stronger entry winning, retire superseded facts, and optionally prune to a storage ceiling. Right: recall(query, budget 2200) ranks memories by expected value per character and then packs the budget; the tier decides how much text a memory contributes - active gives full text, latent a summary of at most 160 characters, archived a gist of at most 64 characters - and a block that would overflow the budget is skipped, so the budget is never exceeded.</desc>
+
+  <rect x="0" y="0" width="960" height="420" fill="#f8fafc"/>
+
+  <g font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+
+    <text x="24" y="32" font-size="18" font-weight="600" fill="#0f172a">Myelinated Memory &#8212; how it works</text>
+    <text x="24" y="52" font-size="13" fill="#64748b">the mechanism only &#8212; the measured results, including the negative ones, are in benchmarks/RESULTS.md</text>
+
+    <!-- session boundary -->
+    <rect x="20" y="64" width="440" height="300" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+    <rect x="20" y="64" width="440" height="4" rx="2" fill="#2563eb"/>
+    <text x="36" y="92" font-size="16" font-weight="600" fill="#0f172a">Session boundary &#8212; refresh()</text>
+
+    <line x1="46" y1="121" x2="46" y2="283" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+
+    <circle cx="46" cy="121" r="11" fill="#eff6ff" stroke="#2563eb"/>
+    <text x="46" y="126" font-size="12" font-weight="600" fill="#2563eb" text-anchor="middle">1</text>
+    <text x="70" y="126" font-size="14" font-weight="600" fill="#0f172a">decay</text>
+    <text x="70" y="144" font-size="13" fill="#475569">score &#215; exp(-rate &#215; dormant days), rate per category</text>
+
+    <circle cx="46" cy="175" r="11" fill="#eff6ff" stroke="#2563eb"/>
+    <text x="46" y="180" font-size="12" font-weight="600" fill="#2563eb" text-anchor="middle">2</text>
+    <text x="70" y="180" font-size="14" font-weight="600" fill="#0f172a">consolidate</text>
+    <text x="70" y="198" font-size="13" fill="#475569">near-duplicates (Jaccard &#8805; 0.90) merge; stronger wins</text>
+
+    <circle cx="46" cy="229" r="11" fill="#eff6ff" stroke="#2563eb"/>
+    <text x="46" y="234" font-size="12" font-weight="600" fill="#2563eb" text-anchor="middle">3</text>
+    <text x="70" y="234" font-size="14" font-weight="600" fill="#0f172a">retire</text>
+    <text x="70" y="252" font-size="13" fill="#475569">a superseded fact stops surfacing</text>
+
+    <circle cx="46" cy="283" r="11" fill="#eff6ff" stroke="#2563eb"/>
+    <text x="46" y="288" font-size="12" font-weight="600" fill="#2563eb" text-anchor="middle">4</text>
+    <text x="70" y="288" font-size="14" font-weight="600" fill="#0f172a">prune</text>
+    <text x="70" y="306" font-size="13" fill="#475569">optional storage ceiling (--max-entries)</text>
+
+    <!-- recall -->
+    <rect x="500" y="64" width="440" height="300" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+    <rect x="500" y="64" width="440" height="4" rx="2" fill="#0d9488"/>
+    <text x="516" y="92" font-size="16" font-weight="600" fill="#0f172a">Recall &#8212; recall(query, budget = 2200)</text>
+
+    <rect x="516" y="106" width="188" height="46" rx="6" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="530" y="126" font-size="13" font-weight="600" fill="#0f172a">1 rank</text>
+    <text x="530" y="143" font-size="12" fill="#475569">value per character</text>
+
+    <text x="722" y="136" font-size="16" fill="#94a3b8" text-anchor="middle">&#8594;</text>
+
+    <rect x="740" y="106" width="184" height="46" rx="6" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="754" y="126" font-size="13" font-weight="600" fill="#0f172a">2 pack</text>
+    <text x="754" y="143" font-size="12" fill="#475569">greedy, never over budget</text>
+
+    <text x="516" y="176" font-size="13" fill="#475569">the tier decides how much text a memory contributes</text>
+
+    <text x="520" y="206" font-size="14" font-weight="600" fill="#0d9488">active</text>
+    <text x="600" y="206" font-size="12" fill="#64748b">score &gt; 0.5</text>
+    <text x="700" y="206" font-size="14" fill="#94a3b8" text-anchor="middle">&#8594;</text>
+    <text x="720" y="206" font-size="13" fill="#0f172a">full text</text>
+
+    <text x="520" y="242" font-size="14" font-weight="600" fill="#0d9488">latent</text>
+    <text x="600" y="242" font-size="12" fill="#64748b">0.1 &#8211; 0.5</text>
+    <text x="700" y="242" font-size="14" fill="#94a3b8" text-anchor="middle">&#8594;</text>
+    <text x="720" y="242" font-size="13" fill="#0f172a">summary, &#8804; 160 chars</text>
+
+    <text x="520" y="278" font-size="14" font-weight="600" fill="#0d9488">archived</text>
+    <text x="600" y="278" font-size="12" fill="#64748b">&#8804; 0.1</text>
+    <text x="700" y="278" font-size="14" fill="#94a3b8" text-anchor="middle">&#8594;</text>
+    <text x="720" y="278" font-size="13" fill="#0f172a">gist, &#8804; 64 chars</text>
+
+    <text x="516" y="316" font-size="13" fill="#475569">blocks that would overflow are skipped,</text>
+    <text x="516" y="334" font-size="13" fill="#475569">so the budget is never exceeded</text>
+
+    <!-- caption -->
+    <text x="480" y="396" font-size="14" fill="#475569" text-anchor="middle">one score per memory: use strengthens it, dormancy decays it, and the tier decides how much of it fits the context budget</text>
+
+  </g>
+</svg>

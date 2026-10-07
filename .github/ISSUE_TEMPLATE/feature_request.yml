@@ -1,0 +1,58 @@
+name: Feature request
+description: A capability, a measurement or a harness improvement
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Claims on this project have to be measurable. A request that names the number it would move, and where that
+        number is reported, is far more likely to be acted on than one that does not.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What can you not do today, and what happens when you try?
+    validations:
+      required: true
+
+  - type: input
+    id: claim
+    attributes:
+      label: Which measured claim this would support or change
+      description: Name the metric and where it is reported - a column in benchmarks/RESULTS.md, or a sweep in docs/TESTING.md.
+      placeholder: hit_rate on the staleness tier, or chars_per_hit in the arm table
+    validations:
+      required: true
+
+  - type: dropdown
+    id: arm
+    attributes:
+      label: Would this ship as its own ablation arm
+      description: The project's attribution rule is one capability per arm (docs/PLAN.md), so say which arm it would be or why it does not need one.
+      options:
+        - "Yes - a new labelled arm"
+        - "No - it changes the harness or a document, not the engine"
+        - "No - it is a defect fix tracked in docs/FIX-PLAN.md"
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criterion
+      description: The number that would prove it worked, written before the run. "Faster" is not a criterion; "p95 under 8 ms over 50 warm queries" is.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints this must respect
+      options:
+        - label: It stays stdlib-only; no new dependency.
+          required: true
+        - label: It can be verified offline, or it is explicitly marked as blocked without an API key.
+          required: true

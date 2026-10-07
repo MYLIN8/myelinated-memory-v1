@@ -1,0 +1,10 @@
+# Downloaded third-party benchmark data (see benchmarks/public_locomo.py)
+benchmarks/data/
+
+# Local memory store used to prime the session (Cos protocol)
+.state/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/

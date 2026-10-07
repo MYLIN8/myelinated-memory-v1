@@ -11,8 +11,8 @@
     "product": ["README.md", "docs/REMEDIATION.md", "SKILL.md"],
     "sales_marketing": []
   },
-  "heads_note": "Round 2: Sales & Marketing was mapped but had NO work; recorded rather than inventing activity, with a 2-analyst pod because the work was 3 tightly coupled files. Round 3 (this request): a review pod of 4 analysts was run in parallel, one per angle (engine internals, harness/statistics, product claims and interface drift, competitive/systems fairness), and every load-bearing finding was re-derived by the coordinator with its own probe before it entered the plan. Sales & Marketing now has real, non-invented work (W10: positioning, a choose-this-if table, and the skill's trigger description), so it is no longer an empty department. Round 3.5 (this request): an offline self-test pass with no API key re-ran every check, re-derived each live defect, and found six more (D13-D18); the ordered fix plan is docs/FIX-PLAN.md, the two engine-testable ones are registered in test_engine.py, and the pass changed no engine or harness behaviour.",
-  "phase": "round-3.5-fix-plan-proposed-awaiting-the-six-P0-fixes",
+  "heads_note": "Round 2: Sales & Marketing was mapped but had NO work; recorded rather than inventing activity, with a 2-analyst pod because the work was 3 tightly coupled files. Round 3 (this request): a review pod of 4 analysts was run in parallel, one per angle (engine internals, harness/statistics, product claims and interface drift, competitive/systems fairness), and every load-bearing finding was re-derived by the coordinator with its own probe before it entered the plan. Sales & Marketing now has real, non-invented work (W10: positioning, a choose-this-if table, and the skill's trigger description), so it is no longer an empty department. Round 3.5 (this request): an offline self-test pass with no API key re-ran every check, re-derived each live defect, and found six more (D13-D18); the ordered fix plan is docs/FIX-PLAN.md, the two engine-testable ones are registered in test_engine.py, and the pass changed no engine or harness behaviour. Round 4 (this request): three analyst pods (engine internals, the benchmark instrument, the front page) plus the coordinator's own re-derivation, which produced docs/ROUND4-DESIGN.md - the eighteen defects reduce to two root causes, and the measured decay coupling (archived 636 -> 0, +33% characters per memory) is why the engine and instrument fixes have to land together. The same request published the repository: the engine, the harness and the results were untracked until this push, so no front-page claim could be reproduced from the repository before it.",
+  "phase": "round-4-designed-and-published-awaiting-the-P0-fixes",
   "round3_plan": {
     "artifact": "docs/PLAN.md",
     "produced_by": "head of staff: intake -> 4 analyst pods in parallel -> coordinator re-verified every load-bearing claim -> plan",
@@ -68,6 +68,47 @@
       "F10 judge-limit and judge errors must not fake zeros"
     ],
     "unchanged": "no engine or harness behaviour changed by this pass: docs/FIX-PLAN.md, the D13/D14 registry entries in benchmarks/test_engine.py, and cross-references in PLAN.md, README.md and this file are the whole diff"
+  },
+  "round4_design": {
+    "artifact": "docs/ROUND4-DESIGN.md",
+    "produced_by": "head of staff: 3 analyst pods in parallel (engine internals, benchmark instrument, front page) -> coordinator re-derived the load-bearing measurement -> design",
+    "finding": "The 18 defects reduce to 2 root causes: (A) strength is an accumulator written by five code paths and 'is this the same memory?' is answered twice by two different rules - D1, D9, D13, D14, D17 + W2/W3; (B) a benchmark record has no declared shape and a run has no declared scope - D2-D8, D15, D16.",
+    "mechanism": [
+      "Rule 1 - strength is derived, never accumulated: strength()/realize() with (score, score_at), tier computed; idempotent, so refresh frequency stops being semantic (D1 dies by construction)",
+      "Rule 2 - one classifier, three policies: unrelated | duplicate | update, shared by the write path and the boundary pass; a retired memory is never a merge target (D13/D14 die) and a value-changing update is detectable with no retire signal - the only mechanism proposed that can move the decay-only leak off 1.000",
+      "Rule 3 - one index version, one pass: _touch/_ensure_index on every mutator, consolidate() as the only rebuild site; the rebuild leaves the query path (W2) and _cluster()/mem.cluster are deleted (W3)"
+    ],
+    "measured_coupling": {
+      "why": "the decay fix is not local - it changes how many memories render at full length, which is the input to the budget-efficiency claim",
+      "method": "model of the engine's own scoring, validated against the shipped engine, re-run with the fixed decay rule; 900-memory scale corpus, seed 0, 60 virtual days",
+      "model_error_vs_engine": "1.67e-16 over 900 memories, 0 collapsed ids (the control)",
+      "tier_mix_shipped": "active 129 / latent 135 / archived 636",
+      "tier_mix_fixed": "active 247 / latent 653 / archived 0",
+      "mean_rendered_chars": "72.9 -> 96.8 (+33%)",
+      "fits_2200_char_budget": "~30 memories -> ~23",
+      "mean_score": "0.146 -> 0.385",
+      "consequence": "criterion 1 (budget efficiency, PASS today at 1589 vs 1734) is at risk from the decay fix alone, so the fix must land together with a re-swept tier policy (thresholds + rendering caps + DETAIL_VALUE) and a diversity term in the packer"
+    },
+    "arms": {
+      "M3t": "BM25 rank + common.downgrade() truncation - the first caller that unused function would ever have",
+      "M3p": "BM25 rank + the engine's detail ladder: is the allocator the win?",
+      "M3k": "BM25 rank + the engine's value-per-char packer with utility = rank position: is the packer the win?",
+      "M11": "engine cosine with PRIOR_WEIGHT=0 on hold-out seeds 3-4: is the retrieval-strength prior a cost to ranking?",
+      "M12": "engine cosine with the unified mechanism: does the store still add anything, and can it move the decay-only leak?"
+    },
+    "first_slice": "realize() + _touch/_ensure_index (~30 lines, testable with test_engine.py alone): realize() twice at the same now is a no-op, N daily realisations equal INITIAL_SCORE x exp(-rate x N) to 1e-9, and incremental index state equals a full rebuild after any add/access/retire/pin sequence",
+    "landing_rule": "the whole mechanism ships as a labelled 11th arm (M12); the (score, score_at) migration is a labelled protocol change with a load() shim, and D13's change in stored counts is never compared across the change (BM-002 / BM-006)",
+    "implemented": false
+  },
+  "published": {
+    "remote": "https://github.com/TWS07-gif/myelinated-memory",
+    "push": "e08fa78..df332a4 on main",
+    "content": "the repo previously carried only its six markdown files; the engine, the harness, the generated results and the documents every front-page claim cites are now committed (36 files on main)",
+    "interface": [".github/workflows/checks.yml (the seven offline suites + py_compile on Python 3.10 and 3.11, no network, no secrets)", ".github/ISSUE_TEMPLATE/{bug_report,feature_request}.yml", ".github/PULL_REQUEST_TEMPLATE.md", "CODE_OF_CONDUCT.md", "CHANGELOG.md", "docs/assets/hero.svg"],
+    "metadata": "description set; 11 topics (memory, memory-management, llm, ai-agents, retrieval, context-management, benchmark, python, stdlib, zero-dependencies, hebbian)",
+    "corrections": ["SECURITY.md no longer claims 'no network calls' or 'sanitized inputs' - it names the three opt-in call sites and calls memory content an injection surface", "SKILL.md documents the configuration that is measured (pass --query, set --category, --pure is global and ignores --query) and carries the known limits", "CONTRIBUTING.md states the real protocol (stdlib only, checks green, one capability per ablation arm, criteria frozen before a run)", "the README's 'committed results' parenthetical now records that benchmarks/ was untracked when round 2 was written and is committed since", "project-state.json moved to docs/project-state.json so the root listing reads as a product"],
+    "ci": "workflow run 37685998712 completed/success: 'offline checks (python 3.10)' and 'offline checks (python 3.11)' both success, 15 steps each",
+    "verified": "working tree equals origin/main (0 uncommitted); all six badges return HTTP 200 image/svg+xml; GitHub's rendered README shows 2 markdown alerts, 7 images and 13 tables; zero broken links or unbalanced fences across every markdown file; docs/project-state.json parses; hero.svg is well-formed XML"
   },
   "round2_measurement_status": "Round 2's tables reproduce exactly (4 of 7, M8 0.825, 1589 chars/hit) but four of its instruments are now known to be unsound: decay compounds, the reported p95 is the max of five queries, the headline leak column mixes 22 records (16 with no retire signal), and the budget comparison pits the engine's packer against truncating baselines. Decay figures from rounds 1-2 are superseded by W0.1.",
   "rounds": {
@@ -396,6 +437,21 @@
       "claim": "D12 was never actually fixed at the source",
       "evidence": "grep -n '20%%' benchmarks/run_bench.py -> line 298 (still generated); 1 occurrence in benchmarks/RESULTS.md and 1 in benchmarks/results/raw.json. The README's criterion cell was reworded, the generator was not, and the artefacts have not been regenerated.",
       "tool": "grep via run_terminal_command"
+    },
+    {
+      "claim": "Fixing the compounding decay alone would cost the budget-efficiency claim, so the decay repair and the tier policy have to move together",
+      "evidence": "Model of the engine's scoring validated against the shipped engine (worst |diff| 1.67e-16 over 900 memories, 0 collapsed ids), then re-run with the fixed rule on the same 900-memory scale corpus: archived memories 636 -> 0, active 129 -> 247, latent 135 -> 653, mean rendered characters per memory 72.9 -> 96.8 (+33%), a 2,200-char budget holds ~30 memories -> ~23, mean score 0.146 -> 0.385. Criterion 1 (chars/hit 1589 vs flat 1734) therefore cannot survive the decay fix without a re-swept tier policy (thresholds, rendering caps, DETAIL_VALUE) and a diversity term.",
+      "tool": "python3 model + replay via run_terminal_command"
+    },
+    {
+      "claim": "The repository now publishes the engine, the harness and the interface, and CI passes on both supported Python versions",
+      "evidence": "git push e08fa78..df332a4 on main (35 files, 94,163 insertions); GitHub Actions run 37685998712 completed/success with both matrix legs green ('offline checks (python 3.10)' and '(python 3.11)', 15 steps each); repo description and 11 topics set; all six README badges return HTTP 200 image/svg+xml; GitHub's rendered README contains 2 markdown-alert callouts, 7 images and 13 tables; two files were kept out of the commit by .gitignore on purpose (the local store in .state/ and the 2.7 MB LoCoMo download in benchmarks/data/).",
+      "tool": "git push + gh api + curl -I via run_terminal_command"
+    },
+    {
+      "claim": "The pushed revision is the verified one",
+      "evidence": "git status -sb: 'main...origin/main' with 0 uncommitted changes; python3 benchmarks/test_engine.py at that revision exits 0 with 69 checks and four KNOWN DEFECT lines; every command the CI workflow runs was executed locally first and exits 0.",
+      "tool": "git status + the offline battery via run_terminal_command"
     }
   ],
   "artifacts": [
@@ -419,7 +475,16 @@
     "docs/PLAN.md",
     "docs/TESTING.md",
     "docs/FIX-PLAN.md",
+    "docs/ROUND4-DESIGN.md",
     "docs/HOW-IT-WORKS.md",
+    "docs/assets/hero.svg",
+    ".github/workflows/checks.yml",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    ".github/ISSUE_TEMPLATE/bug_report.yml",
+    ".github/ISSUE_TEMPLATE/feature_request.yml",
+    "CHANGELOG.md",
+    "CODE_OF_CONDUCT.md",
+    ".gitignore",
     "README.md"
   ]
 }

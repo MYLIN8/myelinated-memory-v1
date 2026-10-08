@@ -2,7 +2,7 @@
 
 > **A Hebbian retrieval-strength memory engine for LLM Agents.**
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.md)
+[![License: Source-Available](https://img.shields.io/badge/license-Source--Available-red.svg)](LICENSE.md)
 [![Python 3.10 | 3.11](https://img.shields.io/badge/python-3.10%20%7C%203.11-3776ab.svg)](CONTRIBUTING.md)
 [![Zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](SECURITY.md)
 [![Checks](https://img.shields.io/badge/checks-10%20offline%20suites%20%7C%20181%20engine%20%7C%20204%20harness%20%7C%2088%20adversarial%20%7C%2071%20judge-brightgreen.svg)](#4-how-it-is-tested)
@@ -594,11 +594,13 @@ Scenarios come from four tiers: a curated suite, a seeded synthetic generator, t
 * **Duplicate-collapsing recall is measured on a probe corpus**, not the benchmark, and one earlier probe was mis-calibrated (a 24-word vocabulary made every memory a candidate of every other) before being re-measured on realistic text.
 * Latency and ingest figures are single-run and noisy; see D2.
 
-**Security.** The engine itself is offline: local file access only, no network, no subprocesses, standard library only. The *harness* is not: `--network`, `--judge llm`, `--judge gemini`, `--judge openai` and `--judge nvidia` call an API, and `public_locomo.py` downloads a dataset once into `benchmarks/data/` (git-ignored). Keys are read from the environment by name only and never written into a report; the default run makes no request at all. Nothing in this project sanitises memory content — it is tokenised for indexing and JSON-encoded for storage — so treat stored memory text as untrusted input to whatever model consumes it. MIT licensed; see [`SECURITY.md`](SECURITY.md) and [`LICENSE.md`](LICENSE.md).
+**Security.** The engine itself is offline: local file access only, no network, no subprocesses, standard library only. The *harness* is not: `--network`, `--judge llm`, `--judge gemini`, `--judge openai` and `--judge nvidia` call an API, and `public_locomo.py` downloads a dataset once into `benchmarks/data/` (git-ignored). Keys are read from the environment by name only and never written into a report; the default run makes no request at all. Nothing in this project sanitises memory content — it is tokenised for indexing and JSON-encoded for storage — so treat stored memory text as untrusted input to whatever model consumes it. **Source-available and non-commercial** — personal, educational, research and evaluation use is permitted with attribution, while commercial use, redistribution, hosting and modification are restricted; see [`LICENSE.md`](LICENSE.md) and [`SECURITY.md`](SECURITY.md).
 
 **Contributing.** The most useful contribution right now is a measured improvement to one of the round-3 targets in [`docs/PLAN.md`](docs/PLAN.md): the harness will tell you immediately whether it worked. Start with `python3 benchmarks/test_engine.py` (it must stay green — a newly registered `KNOWN DEFECT` line is fine, a failing assertion is not; the registry is currently empty), then the next sweep on the ranked list is `DETAIL_VALUE` together with the summary/gist caps, because `PRIOR_WEIGHT` has now been swept, confirmed on hold-out seeds and shipped at 0.0 (`python3 benchmarks/tune_probe.py --name DETAIL_VALUE` is not wired for dictionary constants yet — see the note in the file). The engine is stdlib-only and must stay that way. See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
----## Learn more
+---
+
+## Learn more
 
 - [Codebase tour](README.md) — what each shipped piece is, and the measurement status behind every number
 - [Benchmark results](benchmarks/RESULTS.md) — every table, the pre-registered decision rule and the method notes

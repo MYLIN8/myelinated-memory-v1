@@ -17,6 +17,51 @@ then regenerated it from the round-5 code, so the committed report and the
 figures quoted under [5.1.0] are the same run, and 5.0.0's table stands as the
 hold-out confirmation of it.
 
+## [5.2.1] - 2026-10-08
+
+A documentation, licensing and reproducibility repair. No engine behaviour changes: the store
+schema, the shipped configuration and every benchmark number are exactly as they were in 5.2.0.
+
+### Fixed
+
+- **`benchmarks/public_locomo.py` had been truncated to a 22-line fragment.** A botched edit — made
+  with the intent of changing one `raise` clause — replaced the 244-line LoCoMo adapter with the
+  tail of a single function, so `test_harness.py`, `run_bench.py` (default and `--tier locomo`),
+  `pool_probe.py` and the module's own self-check all died on import with
+  `NameError: name 'Optional' is not defined`. The file is restored from history with the change
+  that commit intended: a missing cache now raises `RuntimeError` (what the harness asserts)
+  rather than `FileNotFoundError`. The harness suite reports its **204 checks** again.
+- **`README.md` had been replaced by a licensing page.** It lost the project description, the
+  measured tables, §4 *How it is tested*, §5.1 and the quick start, while five files — including
+  `SECURITY.md` and the checks badge — still cited sections of it, and the badge anchor
+  `#4-how-it-is-tested` pointed at nothing. The 619-line README is restored, and its two remaining
+  `MIT` claims (the licence badge and §10) are corrected to the licence the project actually ships.
+- `SECURITY.md` ended with a licence section reading `MIT — see LICENSE.md`. It now describes the
+  source-available terms the repository ships under.
+- Stale status reconciled: `docs/project-state.json` (a self-contradiction over whether the report
+  was regenerated, and 170 engine checks against the actual 181), `docs/TESTING.md` (the arm
+  count, `public_locomo`'s self-check, the run list), `docs/DISTRIBUTION.md` (5.2.0 is released),
+  `docs/POST.md` (a wrong import path and an invalid `--tier a,b,c` command),
+  `docs/REMEDIATION.md` (now marked as a frozen round-2 log) and `CONTRIBUTING.md` (the
+  known-defect registry is empty).
+
+### Changed
+
+- **`LICENSE.md` is the single, complete licence text.** It was a summary that pointed at a
+  `LICENSE` file the repository does not ship; it is now numbered terms — the same grants and
+  restrictions, with a no-warranty, liability and termination clause — plus the rationale. The
+  repository has **one active licence** again.
+
+### Removed
+
+- `POLYFORM-NONCOMMERCIAL.md`, a second and unrelated licence in a repository whose README states
+  it carries one. The maintainer's licence is the source-available one above.
+
+### Not yet established
+
+- **The five-seed pooled protocol (F22)**, **a complete model-judged run** and **R12's mechanism
+  separation** remain open; the ranked backlog is in `docs/project-state.json`. None is claimed.
+
 ## [5.2.0] - 2026-10-08
 
 The portability and honesty round: the CLI is repaired, the engine gains an MCP front door, the

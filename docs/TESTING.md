@@ -46,7 +46,7 @@ changed by the review itself.
 | `benchmarks/metrics.py` | **none** | every metric definition is unverified |
 | `benchmarks/run_bench.py` | **none** | `verdict()`, `pairwise()`, the report renderer and the judge-limit path are unverified |
 | `benchmarks/stats.py` | **yes**, ~12 asserts | Wilcoxon identical samples → `(0.0, 1.0)`; a clear shift → `p < 0.05`; `cliffs_delta` sign; bootstrap CI contains the mean and is seed-deterministic; Holm rejects/passes; `paired_summary` significance, and non-significance at n = 3; `format_p`; `percentile` |
-| `benchmarks/engines.py` | **yes**, 2 asserts | 10 offline arms are built; each has `recall_ms` |
+| `benchmarks/engines.py` | **yes**, 2 asserts | 16 offline arms are built (10 at the time of this review, before `M11`-`M13`); each has `recall_ms` |
 | `benchmarks/judge.py` | **yes**, 7 asserts | oracle extracts a line from a context; `contains` and `exact` grading; empty context → empty answer; `make_judge("oracle")` mode; `describe()` refuses the LLM label |
 | `benchmarks/stub_llm.py` | **yes**, 5 asserts | the stub's request→response mapping: answering, forced 0 score, HTTP 500 |
 | `benchmarks/test_llm_judge.py` | **yes**, 71 assertions (22 at the time of this review, 60 after round 4) | the OpenAI-, Gemini- **and** NVIDIA-protocol paths end to end against the local stub: request shape, parsing, cache, HTTP-500 error, judge selection and descriptions, round-4 coverage for the free-tier pace, the 429 backoff, `Retry-After` and the `JUDGE_MAX_CALLS` budget, and round-5 coverage proving `auto`/`oracle` stay offline with an NVIDIA key present and that Gemini and OpenAI keep selection priority |

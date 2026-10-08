@@ -180,15 +180,6 @@ def by_kind(records: Sequence[Dict]) -> Dict[str, Dict[str, float]]:
     return by_field(records, "kind")
 
 
-def success_scores(records: Sequence[Dict], key: str = "judge_score") -> List[float]:
-    """Per-query end-to-end score, in stable query-id order for pairing."""
-    return [float(r.get(key, 0.0)) for r in sorted(records, key=lambda r: r["query_id"])]
-
-
-def paired_keys(records: Sequence[Dict]) -> List[str]:
-    return [r["query_id"] for r in sorted(records, key=lambda r: r["query_id"])]
-
-
 def align(left: Sequence[Dict], right: Sequence[Dict], key: str = "judge_score") -> List[List[float]]:
     """Align two arms' per-query scores by query id.
 

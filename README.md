@@ -479,7 +479,7 @@ regenerated report where earlier wording was unsupported (`D11`). The full regis
 | :--- | :--- | :--- | :--- |
 | D10 | `SKILL.md`'s documented `recall --budget 2200` passes **no question** (query-blind), `--category` is never set, and `--pure` is a global flag, so `recall --pure` is an argument error | following the skill verbatim used to get you an unmeasured configuration | **open** — the skill's command notes are corrected; the CLI is unchanged |
 | D17 | dead paths in the engine (`_cluster()` writing an unread `mem.cluster`, an unused `w_minus` argument) | refresh overhead | **open** |
-| D18 | `_prune()`'s shortfall handling | the pruning guarantee | **partly fixed** — `pin()` refuses a retired memory, `refresh()` reports `prune_deficit` |
+| D18 | `_prune()`'s shortfall handling, and an unused `w_minus` argument in the exact p-value | the pruning guarantee; the statistics internals | **partly fixed** — `pin()` refuses a retired memory, `refresh()` reports `prune_deficit`, and the unused argument is gone (5.2.1); `_prune()`'s shortfall handling is unchanged |
 | D2 | latency is measured through a warm/cold split, a median of three passes and p50/p95/p99, but still flips sign between identical runs | every timing figure; the scale criterion is reported **informational** rather than scored | **partly fixed** — the measurement is honest now, the criterion is not scorable on one host |
 
 ---

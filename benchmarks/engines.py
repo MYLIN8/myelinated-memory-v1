@@ -866,10 +866,6 @@ ARM_ORDER = [
 ]
 
 
-def arm_names() -> List[str]:
-    return list(ARM_ORDER)
-
-
 if __name__ == "__main__":
     arms = build_arms()
     print("arms:", ", ".join(a.name for a in arms))

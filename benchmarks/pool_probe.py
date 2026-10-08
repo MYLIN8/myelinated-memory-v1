@@ -103,6 +103,17 @@ def main() -> int:
             verdict = ("0.05 < gap < 0.15: MIXED - read the per-tier rows, "
                        "nothing collapses into one word")
         print("R11: %s" % verdict)
+        if "locomo" not in {row["source"] for row in rows}:
+            # The verdict above is only comparable to the committed R11 result
+            # when every tier is present. Without the git-ignored dataset cache
+            # the public tier silently drops out, and that tier carries the
+            # whole residual loss - so the conclusion flips. Say so.
+            print("NOTE: the locomo tier was NOT loaded (no cached dataset; run "
+                  "benchmarks/public_locomo.py to fetch it).")
+            print("      This verdict covers %d of the 206 committed queries. The committed "
+                  "R11 result" % len(rows))
+            print("      puts the residual loss entirely on locomo, so this verdict is not "
+                  "comparable to it.")
         sizes = [r["pool_size"] for r in rows]
         print("pool size: mean %.1f, max %d" % (sum(sizes) / len(sizes), max(sizes)))
     return 0

@@ -23,15 +23,12 @@ receives the same ``now`` for the same event so decay is comparable.
 
 from __future__ import annotations
 
-import math
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 DEFAULT_BUDGET = 2200
 SECONDS_PER_DAY = 86400.0
-
-CATEGORIES = ("identity", "preference", "task", "ephemeral", "general")
 
 # Query kinds, used for per-kind reporting.
 QUERY_KINDS = (
@@ -327,12 +324,3 @@ def replay(scenario: Scenario, arm: Arm, budget: int = DEFAULT_BUDGET,
         first_recall = False
 
     return records
-
-
-def arm_size(arm: Arm) -> int:
-    # Deliberately tolerant: this is only used for a report annotation, and an
-    # arm that cannot answer ``size()`` must not abort the whole run.
-    try:
-        return int(arm.size())
-    except Exception:
-        return 0

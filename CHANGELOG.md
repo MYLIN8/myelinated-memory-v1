@@ -17,6 +17,61 @@ then regenerated it from the round-5 code, so the committed report and the
 figures quoted under [5.1.0] are the same run, and 5.0.0's table stands as the
 hold-out confirmation of it.
 
+## [5.2.1] - 2026-10-08
+
+The front page, the licence, and the LoCoMo loader a previous commit had deleted. No engine
+behaviour, no store schema and no published figure in `benchmarks/RESULTS.md` changes. The
+published check counts are unchanged (181 engine / 204 harness / 88 adversarial / 71 judge) -
+but note what they were before this release: `benchmarks/test_harness.py` could not even be
+imported, so "204 harness" was true of the file and false of the repository.
+
+### Fixed
+
+- **`benchmarks/public_locomo.py` had been reduced to one function by `0355a80`**, whose stated
+  intent was a single line (raise `RuntimeError`, not `FileNotFoundError`, when the dataset cache
+  is missing). It also deleted the module docstring, the imports, and `available()`, `validate()`,
+  `convert()`, `cache_path_default()`, `download()` and `_day_of()` - 223 of 224 lines. So
+  `benchmarks/test_harness.py` (the CI harness step) and `benchmarks/pool_probe.py` both died at
+  import with `NameError: Optional is not defined`, and `run_bench.py --tier locomo` could not
+  load a scenario even with the cache present. The file is restored from `d061ef6` - the revision
+  that produced the committed report, so no measurement changes - with the intended one-line edit
+  applied. `harness ok: 204 checks` is green again, and `pool_probe` reproduces the committed
+  non-LoCoMo hit rates exactly (`M11` curated 0.973, synthetic 1.000, staleness 1.000).
+- **`benchmarks/pool_probe.py` reported a conclusion opposite to the committed R11 result** when
+  the git-ignored LoCoMo dataset was absent (CI, a fresh clone): the tier that carries the whole
+  residual loss silently dropped out, flipping the verdict from ORDERING to CANDIDATE GENERATION
+  on 149 of 206 queries. It now names the tier it could not load and says the verdict is not
+  comparable to the committed one.
+- **`stats._exact_two_sided_p` took a `w_minus` argument and never read it** (D18). The parameter
+  and the call-site argument are gone; the statistic is still the minimum of the two rank sums.
+- `benchmarks/common.py` imported `math` without using it.
+
+### Removed
+
+Dead harness surface - module-level names with no caller in any module, test or document, found by
+an AST scan for names with no cross-reference: `common.CATEGORIES`, `common.arm_size`,
+`engines.arm_names`, `metrics.success_scores`, `metrics.paired_keys`, `stats.stdev`. The engine's
+own dead paths are deliberately **not** touched: `_cluster()` and the unread `mem.cluster` are
+D17/W3's pre-registered work, and `refresh` prints the cluster count in its JSON report, so
+removing the pass would move the committed `refresh_total_s` figure without its acceptance
+criterion.
+
+### Changed
+
+- `README.md` rewritten from the last data-rich revision (`0bb3b36`): a plain-English summary and a
+  boxed honest headline for non-technical readers, the headline tables with every figure checked
+  against `benchmarks/RESULTS.md`, the pre-registered decision rule including both of its failures,
+  and links into the full report where the tables used to be inlined. 51 KB against 83 KB, same
+  claims.
+- `LICENSE` added - the complete *Myelinated Memory Source-Available Licence 1.0*, (c) 2026 Thomas
+  Sturgeon, which supersedes every earlier licensing statement in the repository. `LICENSE.md` (a
+  summary claiming a `LICENSE` file that did not exist) and `POLYFORM-NONCOMMERCIAL.md` (an
+  abridged, edited copy of PolyForm Noncommercial 1.0.0, shipped under the original's name) are
+  removed; `SECURITY.md`'s contradictory "MIT" line is gone; `CONTRIBUTING.md` now carries the
+  inbound grant a pull request needs.
+- `docs/TESTING.md` §1: the arm-registry row says 16 offline arms, keeping the historical 10.
+- `SKILL.md`: the skill version, which had drifted a minor behind this changelog.
+
 ## [5.2.0] - 2026-10-08
 
 The portability and honesty round: the CLI is repaired, the engine gains an MCP front door, the

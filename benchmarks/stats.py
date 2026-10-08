@@ -31,14 +31,6 @@ def mean(values: Sequence[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
-def stdev(values: Sequence[float]) -> float:
-    n = len(values)
-    if n < 2:
-        return 0.0
-    mu = mean(values)
-    return math.sqrt(sum((v - mu) ** 2 for v in values) / (n - 1))
-
-
 def percentile(values: Sequence[float], q: float) -> float:
     """Linear-interpolation percentile. ``q`` is a fraction in [0, 1]."""
     if not values:
@@ -80,8 +72,13 @@ def _tie_sizes(ranks: Sequence[float]) -> List[int]:
     return [c for c in counts.values() if c > 1]
 
 
-def _exact_two_sided_p(ranks: Sequence[float], w_plus: float, w_minus: float) -> float:
-    """Exact two-sided p by DP over sign combinations (ranks scaled by 2)."""
+def _exact_two_sided_p(ranks: Sequence[float], w_plus: float) -> float:
+    """Exact two-sided p by DP over sign combinations (ranks scaled by 2).
+
+    ``w_plus`` is the observed positive rank sum; the caller has already folded
+    in ``w_minus`` through the min-statistic (D18: the parameter used to be
+    passed here and never read).
+    """
     scaled = [int(round(r * 2)) for r in ranks]
     total = sum(scaled)
     counts = [0] * (total + 1)
@@ -117,7 +114,7 @@ def wilcoxon(a: Sequence[float], b: Sequence[float]) -> Tuple[float, float]:
     statistic = min(w_plus, w_minus)
 
     if n <= EXACT_MAX_N:
-        return (statistic, _exact_two_sided_p(ranks, w_plus, w_minus))
+        return (statistic, _exact_two_sided_p(ranks, w_plus))
 
     mu = n * (n + 1) / 4.0
     variance = n * (n + 1) * (2 * n + 1) / 24.0

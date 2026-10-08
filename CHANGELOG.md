@@ -48,9 +48,11 @@ schema, the shipped configuration and every benchmark number are exactly as they
 ### Changed
 
 - **`LICENSE.md` is the single, complete licence text.** It was a summary that pointed at a
-  `LICENSE` file the repository does not ship; it is now numbered terms — the same grants and
-  restrictions, with a no-warranty, liability and termination clause — plus the rationale. The
-  repository has **one active licence** again.
+  `LICENSE` file the repository does not ship; it is now the maintainer's own wording — permitted
+  use (personal, educational, research or evaluation, free of charge), the restrictions
+  (commercial use; copying, redistribution or hosting; modify-and-publish; removing the notice),
+  attribution, ownership, no-warranty and termination. The repository has **one active licence**
+  again.
 
 ### Removed
 

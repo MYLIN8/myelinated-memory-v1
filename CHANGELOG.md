@@ -28,6 +28,30 @@ engine configuration are unchanged from 5.1.0, so this is a minor bump.
 
 ### Fixed
 
+*(The adversarial round, from the myelination council's code-and-architecture review — five
+suspected defects were frozen in `benchmarks/test_adversarial.py` before it ran; five confirmed,
+one refuted.)*
+
+- **S1 — a JSON-RPC line that parses to a non-object (`[1,2]`, `"x"`, `3`) crashed the MCP
+  server**: it reached `message.get` uncaught. Non-objects are now answered with a `-32600`
+  invalid-request error, and the server keeps serving after every hostile line.
+- **S2 — one hostile tool argument could kill the MCP server**: `_call_tool` caught only
+  `KeyError`/`ValueError`, so `TypeError` (e.g. `int(None)` for a null `budget`) and `OSError`
+  from `save()` escaped the loop. Any tool failure is now an `isError` result.
+- **S3 — `load()` wrote a schema version but never read one**: a future-schema store loaded
+  silently and lossily (unknown fields dropped by the field filter). `load()` now refuses a
+  newer schema with a clear `ValueError`, rejects non-object stores, and older stores still
+  migrate as before.
+- **S4 — `access()`/`reinforce()` strengthened a *retired* memory**, disagreeing with `pin()`
+  (D18) and the dead-entry rules: a dead fact could be "used" into a higher score and a usage
+  count. Both now refuse, returning `False`/0.
+- **S5 — the CLI accepted a negative `--budget`**; it is now refused with a clean message and
+  exit 2, and a corrupt or future-schema store is likewise a clean `error: …` line rather than
+  a traceback. (S6 — `--pure --force-similarity` — was **refuted**: the combination works as
+  documented, and the suite now pins it.)
+
+### Fixed (round-5 follow-ups)
+
 - **The CLI's similarity flags were parsed but never wired.** `--force-similarity` and
   `--no-similarity` now map to `recall(force_similarity=...)`, the duplicated unreachable block
   after `recall()`'s return is gone, and the phantom `init`/`save`/`load` subcommands and
@@ -58,6 +82,11 @@ engine configuration are unchanged from 5.1.0, so this is a minor bump.
   inverse rule. The engine arm count is now sixteen, all derived from `ARM_ORDER`.
 - **`benchmarks/pool_probe.py`** — the R11 instrument: `candidate_pool(query)` captured inside
   the replay timeline, read-only, writing no artifact.
+- **`benchmarks/test_adversarial.py` — the myelination council's adversarial suite: 88 checks**
+  in four chairs (store & persistence, the algebra of decay, the recall/budget contract,
+  protocol robustness), including the decay semigroup fuzzed over refresh schedules, budget
+  fuzzing over unicode stores at six budgets, MCP survival under hostile JSON-RPC, and clean
+  CLI failures.
 
 ### Measured
 

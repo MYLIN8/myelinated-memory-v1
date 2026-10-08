@@ -115,4 +115,4 @@ kept, hold-out seeds, and the scoped-run provenance rules. End with the two open
 | LoCoMo, dense arm closes the tier | 0.833 vs 0.683 / 0.717 | R10 scoped run, seed 0 |
 | Supersession leak with signal / without | 0.000 / 1.000 | committed report |
 | Decision rule | 4 of 6 scored criteria pass | committed report |
-| Checks | 181 engine checks, 204 harness checks, 71 judge assertions, 9 offline suites | this tree |
+| Checks | 181 engine checks, 204 harness checks, 88 adversarial checks, 71 judge assertions, 10 offline suites | this tree |

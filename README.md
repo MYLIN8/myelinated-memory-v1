@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.md)
 [![Python 3.10 | 3.11](https://img.shields.io/badge/python-3.10%20%7C%203.11-3776ab.svg)](CONTRIBUTING.md)
 [![Zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](SECURITY.md)
-[![Checks](https://img.shields.io/badge/checks-9%20offline%20suites%20%7C%20181%20engine%20checks%20%7C%20204%20harness%20checks%20%7C%2071%20judge%20assertions-brightgreen.svg)](#4-how-it-is-tested)
+[![Checks](https://img.shields.io/badge/checks-10%20offline%20suites%20%7C%20181%20engine%20%7C%20204%20harness%20%7C%2088%20adversarial%20%7C%2071%20judge-brightgreen.svg)](#4-how-it-is-tested)
 [![CI](https://github.com/TWS07-gif/myelinated-memory/actions/workflows/checks.yml/badge.svg)](https://github.com/TWS07-gif/myelinated-memory/actions/workflows/checks.yml)
 [![Benchmark](https://img.shields.io/badge/benchmark-results-orange.svg)](benchmarks/RESULTS.md)
 
@@ -43,7 +43,7 @@ python3 scripts/myelinate.py recall --query "What does the user prefer?" --budge
 python3 benchmarks/test_engine.py                    # engine ok: 181 checks
 ```
 
-All nine check suites are offline, free and run in seconds ([§4](#4-how-it-is-tested)); the full session protocol is [§7](#7-quick-start).
+All ten check suites are offline, free and run in seconds ([§4](#4-how-it-is-tested)); the full session protocol is [§7](#7-quick-start).
 
 **What it is good for today:**
 
@@ -347,6 +347,7 @@ The round-3 plan is [`docs/PLAN.md`](docs/PLAN.md). It starts by repairing the *
 | Stub protocol | `python3 benchmarks/stub_llm.py` | the stub's request→response mapping, including the forced-failure path |
 | MCP server | `python3 scripts/myelinated_mcp.py --selftest` | the stdio JSON-RPC framing and all seven memory tools, in-process against a throwaway store — **no MCP client needed** |
 | Harness fixtures | `python3 benchmarks/test_harness.py` | 204 checks pinning what measured everything except itself: the metric definitions to hand-computed values, the pre-registered verdict against fixture inputs (NOT MEASURED over phantom FAIL, informational rows out of the denominator, BOTH flat baselines), replay determinism, the budget invariant across every offline arm, the LoCoMo conversion, the report renderer, and the D15 output-path guards |
+| Adversarial | `python3 benchmarks/test_adversarial.py` | 88 checks from the myelination council's code-and-architecture review, four chairs: store/persistence (schema-version refusal, corrupt stores, load-replaces-not-merges, save atomicity, retire-then-restate ids), the algebra of decay (the decay semigroup fuzzed over refresh schedules, realize idempotence, dead memories never strengthened), the recall/budget contract (hard ceiling fuzzed over unicode stores at six budgets, determinism, `--pure --force-similarity`), and protocol robustness (the MCP server survives hostile JSON-RPC and keeps serving; the CLI fails cleanly) |
 | Arm registry | `python3 benchmarks/engines.py` | 16 offline arms are built and timed, including the three allocator controls, round 5's `M11`/`M12` and R12's `M13`; the dense arm's batched embedding transport is checked offline against a stub embedder |
 | CI | [`.github/workflows/checks.yml`](.github/workflows/checks.yml) | every suite above plus `py_compile`, on Python 3.10 and 3.11, no network and no secrets |
 
@@ -551,6 +552,7 @@ Scenarios come from four tiers: a curated suite, a seeded synthetic generator, t
 | `scripts/myelinated_mcp.py` | the same engine behind a stdio MCP server (zero dependencies) with `--selftest` |
 | `benchmarks/chart.py` | one command that turns `results/raw.json` into the cost-vs-hit-rate chart and table |
 | `benchmarks/test_harness.py` | the harness's own suite: 204 checks pinning the metrics, the verdict, replay determinism, the budget invariant, the LoCoMo conversion, the renderer and the D15 guards |
+| `benchmarks/test_adversarial.py` | the myelination council's adversarial suite: 88 checks over the store, the decay algebra, the recall/budget contract and both protocols |
 | `benchmarks/pool_probe.py` | the R11 diagnostic: `candidate_pool(query)` at query time, to split candidate generation from ordering |
 | `SKILL.md` | the agent-facing skill: the session protocol (`refresh` → `recall` → `access` → `add`) |
 | `benchmarks/run_bench.py` | the runner: replays every scenario against every arm, judges in-timeline, writes the report |

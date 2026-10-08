@@ -48,6 +48,8 @@ jobs:
 
       - name: Harness fixtures (benchmarks/test_harness.py)
         run: python3 benchmarks/test_harness.py
+      - name: Adversarial fixtures (benchmarks/test_adversarial.py)
+        run: python3 benchmarks/test_adversarial.py
 
       - name: Engine suite (benchmarks/test_engine.py)
         run: python3 benchmarks/test_engine.py

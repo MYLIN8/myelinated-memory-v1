@@ -147,7 +147,11 @@ class McpServer:
         response = self.handle_message(message)
         return None if response is None else json.dumps(response)
 
-    def handle_message(self, message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def handle_message(self, message: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(message, dict):
+            # Valid JSON that is not a JSON-RPC object (`[1,2]`, `"x"`, `3`) is
+            # an invalid request, not a crash (S1).
+            return self._error(None, -32600, "invalid request: expected a JSON-RPC object")
         method = message.get("method")
         msg_id = message.get("id")
         params = message.get("params") or {}
@@ -173,7 +177,11 @@ class McpServer:
         args = params.get("arguments") or {}
         try:
             result = self._dispatch(name, args)
-        except (KeyError, ValueError) as exc:
+        except Exception as exc:
+            # Any tool failure is an isError result. This is a long-running
+            # server: one hostile argument (TypeError from int(None), OSError
+            # from save(), anything a future tool raises) must cost the caller
+            # its call, never the process (S2).
             return self._result(msg_id, {
                 "content": [{"type": "text", "text": str(exc)}],
                 "isError": True,

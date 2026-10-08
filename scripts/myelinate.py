@@ -575,7 +575,10 @@ class MyelinatedMemory:
         dormancy.
         """
         mem = self.memories.get(memory_id)
-        if mem is None:
+        if mem is None or mem.retired:
+            # A retired memory is never strengthened - the same dead-entry rule
+            # as pin() (D18). A caller that means to use a dead fact gets False
+            # and the store stays honest.
             return False
         now = self.clock() if now is None else now
         current = self.realize(mem, now)
@@ -1056,6 +1059,19 @@ class MyelinatedMemory:
             return 0
         with open(target, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
+        # The file carries a schema version; loading must honour it. A newer
+        # store is refused rather than loaded lossily (unknown fields dropped by
+        # the field filter below), and older stores fall through to migration.
+        if not isinstance(payload, dict):
+            raise ValueError("store %s is not a memory store object" % target)
+        schema = payload.get("schema", 2)
+        if not isinstance(schema, int) or isinstance(schema, bool):
+            raise ValueError("store %s has a malformed schema version: %r" % (target, schema))
+        if schema > SCHEMA_VERSION:
+            raise ValueError(
+                "store %s is schema v%d but this build understands up to v%d; "
+                "loading it would silently drop fields - upgrade the engine instead"
+                % (target, schema, SCHEMA_VERSION))
         self.memories = {}
         self._tok = {}
         self._sketch = {}
@@ -1154,8 +1170,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
+    if getattr(args, "budget", 0) < 0:
+        print("error: --budget must be >= 0", file=sys.stderr)
+        return 2
     kwargs = {"similarity": False, "knapsack": False, "stale_retirement": False} if args.pure else {}
-    engine = MyelinatedMemory(path=args.store, **kwargs)
+    try:
+        engine = MyelinatedMemory(path=args.store, **kwargs)
+    except ValueError as exc:
+        # Corrupt or future-schema store: a clean message and exit 2, never a
+        # traceback on the terminal that asked for a one-liner.
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
 
     if args.command == "add":
         memory_id = engine.add(

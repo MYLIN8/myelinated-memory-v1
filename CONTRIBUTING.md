@@ -26,6 +26,7 @@ python3 benchmarks/stub_llm.py
 python3 benchmarks/synthetic.py
 python3 benchmarks/test_llm_judge.py  # the LLM judge protocol, against a local stub
 python3 benchmarks/test_harness.py    # the harness: 204 checks, exits 0
+python3 benchmarks/test_adversarial.py # the council's adversarial suite: 88 checks, exits 0
 python3 scripts/myelinated_mcp.py --selftest   # the MCP server, in-process, no client needed
 python3 -m py_compile scripts/myelinate.py scripts/myelinated_mcp.py benchmarks/*.py
 ```

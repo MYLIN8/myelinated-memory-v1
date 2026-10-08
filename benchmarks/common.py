@@ -229,10 +229,25 @@ def pack_blocks(blocks: Sequence[Tuple[str, str]], budget: int) -> Tuple[str, Li
 
 
 def downgrade(text: str, limit: int) -> str:
+    """Fit ``text`` into ``limit`` characters, marking a cut with an ellipsis.
+
+    Never returns more than ``limit`` characters, whatever the limit is. The
+    original form returned the bare ``"..."`` marker for any ``limit`` below 3,
+    which is *longer* than the budget it was asked to fit - harmless at its only
+    call site (``engines.Bm25TruncateArm`` refuses to call it with less than
+    ``MIN_BLOCK``), but a contract violation in a shared helper, and a quiet way
+    for a future arm to overrun the budget it was handed.
+    """
     flat = " ".join((text or "").split())
+    if limit <= 0:
+        return ""
     if len(flat) <= limit:
         return flat
-    return flat[: max(0, limit - 3)].rstrip() + "..."
+    if limit <= 3:
+        # No room for the marker: a plain slice stays inside the limit, whereas
+        # an ellipsis alone would not fit.
+        return flat[:limit]
+    return flat[: limit - 3].rstrip() + "..."
 
 
 def replay(scenario: Scenario, arm: Arm, budget: int = DEFAULT_BUDGET,
@@ -315,6 +330,8 @@ def replay(scenario: Scenario, arm: Arm, budget: int = DEFAULT_BUDGET,
 
 
 def arm_size(arm: Arm) -> int:
+    # Deliberately tolerant: this is only used for a report annotation, and an
+    # arm that cannot answer ``size()`` must not abort the whole run.
     try:
         return int(arm.size())
     except Exception:

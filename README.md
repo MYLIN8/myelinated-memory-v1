@@ -83,6 +83,7 @@ Which is worth saying plainly, because it is the most interesting result in this
 | [6. Known defects](#6-known-defects) | the bugs found by review, and what they affect |
 | [7. Quick start](#7-quick-start) | the session protocol and the importable API |
 | [8. Reproducing the benchmark](#8-reproducing-the-benchmark) | one command, plus the method notes |
+| [8A. How I thought this through](#8a-how-i-thought-this-through) | the reasoning behind the design, for a non-technical reader, including where it was wrong |
 | [9. Project layout](#9-project-layout) | what every file is for |
 | [10. Limitations, security, contributing](#10-limitations-security-contributing) | the fine print |
 
@@ -160,13 +161,13 @@ The remaining engine-side machinery:
 
 ## 2. Measured results
 
-These are not estimates. The full run is reproducible with one command:
+These are not estimates. The full run is reproducible with one command on a fast machine, and in two bounded passes on a slow one — see [§8](#8-reproducing-the-benchmark):
 
 ```bash
 python3 benchmarks/run_bench.py
 ```
 
-33 scenarios / 206 queries / a 2,200-character budget, on a virtual clock. **Fifteen** memory policies are built. The first table below is the **committed round-4 record**: [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) was *not* regenerated after round 5 changed the engine, so its engine rows show the round-4 configuration and their nDCG columns are the *packed* order (D8, repaired afterwards). Round 5's shipped default and its two controls follow in their own table. Every arm competes over an identical event stream, so all of them see the same adds, accesses, retirements and questions. The engine rows are **the same engine with one capability switched on at a time**, which is what makes each line attributable to a named change; the three `M3t`/`M3p`/`M3k` rows and round 5's `M11`/`M12` are **controls** (see [§2.3](#23-the-allocator-controls-is-the-win-the-store-or-the-packer)):
+33 scenarios / 206 queries / a 2,200-character budget, on a virtual clock. **Fifteen** memory policies are built. The first table below is the **committed record, taken from the regenerated report** ([`benchmarks/RESULTS.md`](benchmarks/RESULTS.md), seed 0, round-5 code): every engine row now carries the corrected **rank-order** `nDCG@10` beside the packed one (D8/F21, repaired in round 5), and the engine rows are the shipped configuration together with its legacy-pinned controls. Round 5's pre-registered hold-out run on seeds 3–4 follows in its own table, because it is a separate measurement of the same configuration. Every arm competes over an identical event stream, so all of them see the same adds, accesses, retirements and questions. The engine rows are **the same engine with one capability switched on at a time**, which is what makes each line attributable to a named change; the three `M3t`/`M3p`/`M3k` rows and round 5's `M11`/`M12` are **controls** (see [§2.3](#23-the-allocator-controls-is-the-win-the-store-or-the-packer)):
 
 | Memory system | Task success | Evidence hit rate | nDCG@10 | Chars per hit |
 | :--- | ---: | ---: | ---: | ---: |
@@ -180,9 +181,9 @@ python3 benchmarks/run_bench.py
 | Semantic - TF-IDF cosine | **0.563** | 0.874 | 0.729 | 1541 |
 | Myelinated - as specified | 0.534 | 0.680 | 0.443 | 1935 |
 | Myelinated + query similarity | 0.558 | 0.816 | 0.689 | 1614 |
-| **Myelinated + value-per-char packing** | 0.558 | 0.835 | 0.639 | **1572** |
-| Myelinated + supersession | 0.558 | 0.835 | 0.639 | 1572 |
-| Myelinated + utility reinforcement *(hero)* | 0.553 | 0.830 | 0.615 | 1596 |
+| **Myelinated + value-per-char packing** | 0.558 | 0.835 | 0.689 | **1572** |
+| Myelinated + supersession | 0.558 | 0.835 | 0.689 | 1572 |
+| Myelinated + utility reinforcement *(hero)* | 0.553 | 0.830 | 0.673 | 1596 |
 
 **Round 5: the shipped default and the two controls** (hold-out seeds 3–4, 206 queries per arm, offline oracle judge, `--tier all --skip-scale`). Each new arm is M10 with exactly one change: `M11` sets the prior weight to 0, `M12` lifts the candidate ceilings to unbounded. Pairs are `seed 3 / seed 4`.
 
@@ -204,9 +205,11 @@ A control is not a baseline: `M3k` ranks with BM25 and only fills the budget the
 | :--- | :--- | ---: | ---: | ---: | ---: |
 | M6 myelinated (pure) | *the specification* | 0.534 | 0.680 | 0.443 | 1935 |
 | M7 myelinated + similarity | R1 query similarity | 0.558 | 0.816 | 0.689 | 1614 |
-| **M8 myelinated + knapsack** | R4/R7 value-per-char packing | 0.558 | **0.835** | 0.639 | **1572** |
-| M9 myelinated + supersession | R5 retire/supersede | 0.558 | 0.835 | 0.639 | 1572 |
-| M10 myelinated + reinforcement | R2 utility reinforcement | 0.553 | 0.830 | 0.615 | 1596 |
+| **M8 myelinated + knapsack** | R4/R7 value-per-char packing | 0.558 | **0.835** | 0.689 | **1572** |
+| M9 myelinated + supersession | R5 retire/supersede | 0.558 | 0.835 | 0.689 | 1572 |
+| M10 myelinated + reinforcement | R2 utility reinforcement | 0.553 | 0.830 | 0.673 | 1596 |
+
+Column note: `nDCG@10` here is the **rank order** the arm produced before packing. The report prints the packed order beside it as `nDCG@10 packed` (`M8`: 0.689 rank against 0.639 packed). Before round 5 repaired D8/F21 the two columns were identical for every engine arm, which is why older write-ups quote 0.639 as `M8`'s ranking.
 
 ### 2.2 Staleness: supersession vs decay alone
 
@@ -231,20 +234,22 @@ Two things to read carefully. First, M2's `0.000` is not a win: it retrieved **n
 
 D7 asked whether the engine's budget-efficiency win came from its memory policy or from the fact that it packs the budget while the baselines truncate at full text. Round 4 answers it with three controls that hold BM25's ranking fixed and vary only the allocation:
 
+The BM25 rows and the `M8` row are the committed report (seed 0); the `M11` row is the pre-registered **hold-out** run on seeds 3–4, so it is the mean of two seeds rather than one committed run — read it column-for-column with that in mind.
+
 | Arm | Ranking | Allocation | Hit rate | nDCG@10 | Chars per hit | LoCoMo hit rate |
 | :--- | :--- | :--- | ---: | ---: | ---: | ---: |
 | M3 semantic/BM25 | BM25 | full text, skip what does not fit | 0.864 | **0.732** | 1336 | 0.617 |
 | M3t BM25 + truncated text | BM25 | full text **truncated** into the remaining budget | 0.864 | **0.732** | 1343 | 0.617 |
 | M3p BM25 + engine ladder | BM25 | engine tiers by rank band | 0.879 | **0.732** | 1317 | 0.667 |
 | **M3k BM25 + engine packer** | BM25 | engine value-per-character packer | **0.893** | **0.732** | **1296** | **0.717** |
-| M8 myelinated (round-4 configuration) | engine score | engine value-per-character packer | 0.835 | 0.639 | 1572 | 0.433 |
+| M8 myelinated (round-4 configuration) | engine score | engine value-per-character packer | 0.835 | 0.689 | 1572 | 0.433 |
 | **`M11` myelinated (shipped in round 5)** | engine cosine, prior at 0 | engine value-per-character packer | **0.893** | **0.702** | **1276** | 0.683 |
 
 **The control won the round-4 comparison, and round 5 pulled the engine level with it.** In round 4 the control `M3k` beat every engine arm on hit rate (0.893 against M8's 0.835) and on the LoCoMo tier (0.717 against 0.433) while spending *fewer* characters per hit (1296 against 1572). Round 5 closed most of that: the shipped engine (`M11`) now also reaches **0.893** hit rate at **1276** characters per hit — beating the control on cost — and raises LoCoMo from 0.433 to **0.683**, though it still trails there (0.717) and on ranking order (nDCG 0.702 against 0.732, which no engine arm has yet reached). The counterweight: 0.03 of nDCG is all that separates the two now, so a single allocator-and-ranker change moved the engine from *losing on retrieval* to *level on retrieval and cheaper*, without touching the strength, decay or tier machinery. `M3t` shows the truncation difference is worth less than one point of hit rate and 7 characters per hit, and `M3p` shows the tier ladder alone is worth half of `M3k`'s gain. The control is still *not* swapped in as the hero (BM-004), and `M12` (the same engine with every candidate ceiling removed) reproduces `M10` exactly, so the ceilings are not what the engine was losing to.
 
 ### 2.4 Where the rounds are won and lost, by tier (hit rate)
 
-The round-4 columns are the committed record; `M11` is round 5's shipped default on the hold-out seeds.
+Every column is the regenerated committed report (seed 0, round-5 code), `M11`'s included: the prior-weight change moved the LoCoMo tier, not the tiers that were already at ceiling.
 
 | Tier (queries) | M6 pure | **M8 packing** | `M3k` control | BM25 | TF-IDF | `M11` shipped |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -267,6 +272,8 @@ Every figure is the **median of three timed passes** over the same queries, with
 
 The stored counts moved for M9/M10 (9998 → 10000): the update path stores the newer wording instead of absorbing it into an existing entry.
 
+**Lifting the candidate ceilings does not help retrieval, and at this scale it is prohibitive.** `M12` — the same engine with `max_candidates`, `max_postings_scan` and `recall_pool` all unbounded — ties `M10` exactly on every retrieval metric, so the ceilings cost nothing measurable across 206 queries. At 10,000 memories it then ingests in **137.9 s** against **~5 s** for every capped arm, refreshes in **75.7 s** against ~3 s, and answers at p50 **72.2 ms** against ~28 ms: roughly 25x the ingest for no measured retrieval gain. The ceilings are not what the engine was losing to, and removing them is not a road to winning.
+
 Recall latency is in the report rather than here, deliberately. The engine is faster than BM25 on some runs and slower on others — 23.9 ms against 52.9 ms in one pair of identical runs, 34.3 ms against 30.9 ms in the next — with a per-pass spread of up to 5x, so the report prints the numbers and marks the scale criterion **informational** instead of scoring it.
 
 ### 2.6 The pre-registered decision rule (version 3)
@@ -279,17 +286,17 @@ The rule below was fixed **before** the run, and its version number is printed i
 | :--- | :--- | :---: | :--- |
 | 1 | Budget efficiency: no more characters per evidence hit than flat/FIFO | **PASS** | 1596 vs flat 1734 |
 | 2 | Query-conditioned retrieval (pre-registered hero M10): within 5 hit-rate points of the best baseline | **PASS** | M4 leads by −0.044 |
-| 3 | Best measured engine configuration within 5 hit-rate points of the best baseline | **PASS** | M8 at 0.835, M4 leads by −0.039 |
+| 3 | Best measured engine configuration within 5 hit-rate points of the best baseline | **PASS** | `M11` at 0.893, M4 leads by +0.019 |
 | 4 | Staleness with supersession: under 20% of superseded facts still surface | **PASS** | leak 0.000 vs flat 0.000 |
 | 5 | Decay alone: superseded facts fade without an explicit retire signal | **FAIL** | hero leak 1.000 (M6 pure leaks 0.000) |
-| 6 | Scale: recall p95 faster than BM25 at 10,000 memories | **INFORMATIONAL** | 40.4 vs 43.1 ms this run; the sign flips between identical runs |
+| 6 | Scale: recall p95 faster than BM25 at 10,000 memories | **INFORMATIONAL** | 28.6 vs 30.8 ms this run; the sign flips between identical runs |
 | 7 | Significantly better end-to-end score than **both** flat baselines (Holm-adjusted p<0.05) | **FAIL** | M1 −0.005 p=1.000; M2 +0.068 p=0.001 |
 
 **Verdict: 4 of 6 scored criteria passed**, one row informational, none unmeasured. Row 6 is printed and *not scored*: two identical runs of this commit on this host measured 121.9 vs 101.3 ms (hero loses) and 108.1 vs 126.4 ms (hero wins) on the same seed, with per-pass spreads of up to 5x, so its sign is not reproducible and a criterion that flips cannot decide a verdict. Rows 5 and 7 are genuine failures. The three instrumentation bugs that used to sit in this table are repaired: the doubled `%` is gone (D12), row 7 now requires both flat arms rather than either (D6), and row 6 no longer pretends to be scorable on a single host (D2).
 
-The pre-registered hero arm is *not* swapped for whichever arm won — M10 is reported at its measured value, and M8 (a different arm) is reported alongside it as the best configuration.
+The pre-registered hero arm is *not* swapped for whichever arm won — M10 is reported at its measured value, and `M11` (a different arm) is reported alongside it as the best measured configuration. Changing the hero is a decision-rule change, not an edit, so it needs a criteria-version bump and is left for one.
 
-**Where the shipped round-5 engine sits against the same rule.** Two rows move for `M11`, and neither is a rewrite of the rule: criterion **1** improves (1276 characters per evidence hit against flat memory's 1734, where the round-4 configuration spent 1596), and criterion **3** is now met with no gap at all — `M11` measures **0.893** hit rate, level with the packer control and ahead of TF-IDF's 0.874, so the rule's "within 5 points" bar understates the position rather than flattering it. Rows **5** (decay alone) and **7** (significance against both flat arms) are unchanged failures, and row **6** is still informational. The verdict above is the round-4 verdict and is left as it was measured.
+**Where the shipped engine sits against the same rule.** This is the rule above, applied to `M11`, with nothing rewritten: criterion **1** passes on cost (the hero's 1596 characters per evidence hit against flat memory's 1734; the shipped arm measures **1279** in the committed report), and criterion **3** now passes with no gap at all — the best measured engine configuration is `M11` at **0.893**, with TF-IDF ahead by just 0.019, so the rule's "within 5 points" bar understates where the engine has got to rather than flattering it. Rows **5** (decay alone) and **7** (significance against both flat arms) are genuine, unchanged **failures**, and row **6** stays informational. The verdict above is the regenerated report's own verdict: **4 of 6** scored, one informational, none unmeasured.
 
 ---
 
@@ -304,7 +311,7 @@ The pre-registered hero arm is *not* swapped for whichever arm won — M10 is re
 *   **Decay is no longer clearly wrong — and still not proven.** With the arithmetic repaired, the pure configuration leaks **0.000** on the decay-only suite while retrieving **1.000** of the evidence, where in round 3 it leaked 1.000. It is the first configuration in this project to retire a stale fact by decay alone. But the configured hero **M10 still leaks 1.000**, the suite is three scenarios with one query each (the leak can only take values in {0, ⅓, ⅔, 1}), and criterion 5 therefore still **fails**. Recorded as a low-power lead, not a capability.
 *   **Utility reinforcement still hurts slightly.** Learning from memories that were present when an answer came out right *lowered* hit rate (M8 0.835 → M10 0.830) and task success (0.558 → 0.553). Reinforcing everything that was nearby rewards proximity, not causation.
 *   **One real cost, and one measurement too noisy to claim.** Ingest is ~5 s per 10,000 memories against flat memory's 0.010 s, and session refresh for the engine family is ~3 s. Recall latency is a different story: it flips sign between identical runs (the engine beat BM25 in one pair and lost in the next, with a per-pass spread up to 5x), so the report prints the figures and marks that criterion **informational** rather than claiming a win either way. The query-*blind* engine is the fastest *myelinated* configuration; a flat store answers in well under a millisecond because it does no scoring at all.
-*   **BM25 still ranks better, by much less than it looked.** nDCG@10 is **0.734/0.731** for BM25 against **0.702/0.697** for the shipped engine (`M11`) and **0.639** for the round-4 configuration (`M8`), so semantic retrieval still places the evidence *higher* even when the engine surfaces it. This number only became trustworthy in round 5. Both nDCG columns used to be **identical for every engine arm** (`M11` 0.690 and 0.690, `M8` 0.641 and 0.641) while the BM25 arms' columns differed (0.734 and 0.737), which is impossible when an allocator reorders context: the arm exposed only the packed order and the harness scored the allocator as if it were the ranker (D8). With `RecallResult.ranked_ids` populated, the rank order is scored (0.690 → 0.702) and the packed order is reported beside it (0.690). The remaining gap is real, not an allocator artifact — and it is 0.03 points, not 0.09.
+*   **BM25 still ranks better, by much less than it looked.** nDCG@10 is **0.734/0.731** for BM25 against **0.702/0.697** for the shipped engine (`M11`) on the hold-out seeds — and **0.732** against **0.699** in the committed report — with **0.689** for the round-4 configuration (`M8`, whose *packed* order is 0.639), so semantic retrieval still places the evidence *higher* even when the engine surfaces it. This number only became trustworthy in round 5. Both nDCG columns used to be **identical for every engine arm** (`M11` 0.690 and 0.690, `M8` 0.641 and 0.641) while the BM25 arms' columns differed (0.734 and 0.737), which is impossible when an allocator reorders context: the arm exposed only the packed order and the harness scored the allocator as if it were the ranker (D8). With `RecallResult.ranked_ids` populated, the rank order is scored (0.690 → 0.702) and the packed order is reported beside it (0.690). The remaining gap is real, not an allocator artifact — and it is 0.03 points, not 0.09.
 
 **The summary: this engine is worth using on its own merits, and here is exactly what they are.** It retrieves **level with the best semantic baseline** (0.893 hit rate); it is **cheaper per evidence hit than any arm in the suite** (1276 characters); it beats flat and recency stores by a wide margin on both metrics at once; it carries store semantics a lexical index simply does not have (pinning, supersession with leak 0.000, per-category decay, tiered rendering, duplicate collapsing); and it runs with no service, no vector database, no embedding API and no key. What it is *not*: the best pure ranker (BM25 orders evidence 0.03 nDCG better and leads the public LoCoMo tier 0.717 to 0.683), or proof that the strength-and-decay mechanism its name comes from earns its keep — that prior measured as a *cost* and was demoted to a tie-breaker in round 5, and the decay-alone claim still fails its criterion. If ranking quality is the only thing you care about and you can already run BM25, use BM25: it orders evidence better. This engine's case is cost, store semantics and zero infrastructure — and it now makes that case without giving up retrieval quality.
 
@@ -476,6 +483,10 @@ The agent-facing session protocol (what to call, and when) is [`SKILL.md`](SKILL
 
 ---
 
+### 8A. How I thought this through
+
+The engineering decisions are described above; the thinking behind them — the metaphor I started from, the eight decisions in the order I made them, and the four findings that contradicted me (the allocator doing the winning, the hand-set strength weight being a pure cost, the measurement tool that had never once run, and the decay claim still being unproven) — is written up without the machinery in [`docs/THOUGHT-PROCESS.md`](docs/THOUGHT-PROCESS.md).
+
 ## 8. Reproducing the benchmark
 
 ```bash
@@ -493,13 +504,22 @@ python3 benchmarks/test_llm_judge.py                              # verifies the
 
 **Only the full default run writes the published artefacts.** `benchmarks/RESULTS.md` and `benchmarks/results/raw.json` are the report and its evidence; a scoped run writes `RESULTS-<tier>.md` and `results/raw-<tier>.json` instead, so a partial run can never replace what you are reading (D15). The report itself prints the exact command, the judge, the seed, the Python version, the criteria version and the per-query judge ledger it was produced from.
 
+**On a machine whose command timeout is shorter than the run**, the same run can be produced in two bounded passes without changing what is measured. The 10,000-memory scale probe is the long pole — the whole query side takes seconds — and one arm's unbounded scan can outlast a three-minute limit on its own, so:
+
+```bash
+python3 benchmarks/run_bench.py --phase queries --state /tmp/run.json   # replay the query tiers, checkpoint
+python3 benchmarks/run_bench.py --phase scale   --state /tmp/run.json   # scale probe, then write the report
+```
+
+The second pass reuses any scale row an earlier pass already measured, so it is safely re-runnable, and it writes the ordinary committed paths. The two passes must agree on seed, tiers, budget, judge and arm list or the second refuses to render at all, and the report records the assembly in its own `phases` field — the committed report in this repository was produced this way. The default remains a single process.
+
 The harness replays identical event streams and virtual clocks against every arm, then scores each returned context with an LLM or with a deterministic evidence-containment oracle, **inside the timeline**, so an arm that consumes the reinforcement signal can learn as it goes. It writes [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) and `benchmarks/results/raw.json`, recording the exact command, judge, seed and Python version.
 
 Scenarios come from four tiers: a curated suite, a seeded synthetic generator, two dedicated staleness suites (one with an explicit retire signal, one without), and the public [LoCoMo](https://github.com/snap-research/locomo) long-conversation benchmark, downloaded on demand into `benchmarks/data/` (git-ignored).
 
 **Method notes that matter when reading the numbers**
 
-* The tables above used the **offline oracle judge**, which rewards *surfacing* evidence rather than reasoning over it — so the task-success column is a lower bound, not a substitute for a model-judged run. Every report labels which judge produced it. The top two arms differ by 0.005 task success (TF-IDF 0.563 vs M10 0.553), which is smaller than any plausible judge noise, so **"answers more questions correctly" is unproven** until a full `--judge llm` run completes. That path is now integrated and verified live against two providers (Gemini and NVIDIA NIM both returned real answers and real grades, and a judged harness pass made live calls for every arm it reached), but no model has scored a whole run: judging 206 queries is network-bound and outran the command budget used for these checks.
+* The tables above used the **offline oracle judge**, which rewards *surfacing* evidence rather than reasoning over it — so the task-success column is a lower bound, not a substitute for a model-judged run. Every report labels which judge produced it. The top two arms differ by 0.005 task success (TF-IDF 0.563 vs `M8` and `M9` at 0.558), which is smaller than any plausible judge noise, so **"answers more questions correctly" is unproven** until a full `--judge llm` run completes. That path is now integrated and verified live against two providers (Gemini and NVIDIA NIM both returned real answers and real grades, and a judged harness pass made live calls for every arm it reached), but no model has scored a whole run: judging 206 queries is network-bound and outran the command budget used for these checks.
 * The two staleness suites are reported separately because a supersession win is not a decay win.
 * On the LoCoMo tier — a ~1,450-turn transcript against a 2,200-character budget, with turns labelled ephemeral — every arm scores near zero task success. It is kept because it is public, not because it flatters anything, and §2.3 shows it is where the headline gap lives.
 * The retrieval metrics are stable across runs: two identical runs of this commit produced identical hit rate, nDCG and chars-per-hit for every arm. The latency figures are **not**, and the report now says so rather than scoring them. Warm recalls are separated from each scenario's first (cold) recall, the scale figures are the median of three timed passes with the per-pass spread kept in `results/raw.json`, and identical runs still flipped the sign of the engine-versus-BM25 comparison. That is why the scale criterion is reported as **informational**. Treat any latency difference below a factor of two on this machine as noise, and read the numbers from the report you are reproducing rather than from a page like this one.
@@ -555,12 +575,13 @@ Scenarios come from four tiers: a curated suite, a seeded synthetic generator, t
 
 **Contributing.** The most useful contribution right now is a measured improvement to one of the round-3 targets in [`docs/PLAN.md`](docs/PLAN.md): the harness will tell you immediately whether it worked. Start with `python3 benchmarks/test_engine.py` (it must stay green — a newly registered `KNOWN DEFECT` line is fine, a failing assertion is not; the registry is currently empty), then the next sweep on the ranked list is `DETAIL_VALUE` together with the summary/gist caps, because `PRIOR_WEIGHT` has now been swept, confirmed on hold-out seeds and shipped at 0.0 (`python3 benchmarks/tune_probe.py --name DETAIL_VALUE` is not wired for dictionary constants yet — see the note in the file). The engine is stdlib-only and must stay that way. See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
----
+---## Learn more
 
-## Learn more
-
+- [Codebase tour](README.md) — what each shipped piece is, and the measurement status behind every number
 - [Benchmark results](benchmarks/RESULTS.md) — every table, the pre-registered decision rule and the method notes
 - [Round 3 plan](docs/PLAN.md) — measurement defects, attribution experiments, pre-registered acceptance criteria
+
+
 - [Fix plan](docs/FIX-PLAN.md) — the ordered bug-fix list, the six defects found by the offline self-test pass, and what an API key would unblock
 - [Round 4 design](docs/ROUND4-DESIGN.md) — the two root causes behind the eighteen defects, and the unified mechanism that replaces them
 - [Round 5 strategy](docs/ROUND5-STRATEGY.md) — what the deficit actually was, the criterion the shipped arm passes, and what is still open
@@ -568,6 +589,7 @@ Scenarios come from four tiers: a curated suite, a seeded synthetic generator, t
 - [Remediation log](docs/REMEDIATION.md) — what each round changed, including the losses
 - [Changelog](CHANGELOG.md) — the same history in release form
 - [How it works](docs/HOW-IT-WORKS.md) — a shorter narrative walkthrough
+- [How I thought about this](docs/THOUGHT-PROCESS.md) — the design reasoning in plain language, from neuron myelination to the shipped engine, written for readers with no technical background (including the ideas that turned out to be wrong)
 
-`docs/PLAN.md`, `docs/TESTING.md`, `docs/FIX-PLAN.md` and `docs/ROUND4-DESIGN.md` are this project's **engineering log**, written in-house for the maintainer (they refer to analyst pods, board rulings such as BM-004, and pre-registered criteria by id). They are kept public because the reasoning behind a number is as load-bearing as the number. The user-facing documents are this README, [`SKILL.md`](SKILL.md) and [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md).
+`docs/PLAN.md`, `docs/TESTING.md`, `docs/FIX-PLAN.md` and `docs/ROUND4-DESIGN.md` are this project's **engineering log**, written in-house for the maintainer (they refer to analyst pods, board rulings such as BM-004, and pre-registered criteria by id). They are kept public because the reasoning behind a number is as load-bearing as the number. The user-facing documents are this README, [`SKILL.md`](SKILL.md), [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md) and [`docs/THOUGHT-PROCESS.md`](docs/THOUGHT-PROCESS.md), the last of which assumes no technical background at all.
 - [Hermes integration guide](SKILL.md) — the session protocol

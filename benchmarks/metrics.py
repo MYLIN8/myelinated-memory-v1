@@ -1,8 +1,15 @@
 """Retrieval and context metrics computed from replay records.
 
 A *record* is one dictionary produced by ``common.replay``: it holds the arm's
-``used_ids`` (in rank order), the ground-truth ``evidence_ids``, the superseded
-``stale_ids`` and the rendered ``context``.
+``used_ids`` (what actually reached the context, in packing order), the
+``ranked_ids`` the arm reported *before* packing, the ground-truth
+``evidence_ids``, the superseded ``stale_ids`` and the rendered ``context``.
+
+Rank metrics read ``ranked_ids`` and fall back to ``used_ids`` only for arms
+that do not distinguish the two orders. Reading the packing order as the rank
+order is defect D8: it scored the allocator's reordering as ranking skill. Do
+not "simplify" that fallback away on the assumption that the two are equal -
+some arms, the engine among them, deliberately reorder while packing.
 
 Records with no ``evidence_ids`` have no ground truth and are skipped by the
 retrieval metrics rather than being counted as failures.
@@ -146,7 +153,17 @@ def summarize(records: Sequence[Dict], judged_only: bool = True) -> Dict[str, fl
         "cold_ms": _mean(cold),
         "warm_samples": float(len(warm)),
         # Characters spent per query that actually hit evidence: the headline
-        # "budget efficiency" number. Lower is better.
+        # "budget efficiency" number. Lower is better, and `inf` means the arm
+        # never surfaced evidence at all (reported, never silently zero).
+        # NOTE: this is a ratio of two means over potentially different record
+        # sets - `chars` spans every record, `hits` only the ones carrying
+        # evidence. On the committed corpora every query has evidence, so the two
+        # sets coincide and the ratio is unambiguous; on a corpus with
+        # evidence-free queries, their spending would count in the numerator
+        # while their misses would not count in the denominator. Left as it is
+        # because the definition is published (README 2/3) and changing it would
+        # move every figure on the page - but a future corpus should decide this
+        # deliberately rather than inherit it.
         "chars_per_hit": (_mean(chars) / _mean(hits)) if _mean(hits) > 0 else float("inf"),
     }
 

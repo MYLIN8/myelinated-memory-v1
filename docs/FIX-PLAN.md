@@ -107,14 +107,47 @@ tie-breaker"* — is exactly what was executed, on the criterion frozen in the F
   `MAX_CANDIDATES`/`MAX_POSTINGS_SCAN`/`RECALL_POOL`) reproduces `M10` exactly on
   both seeds, so the ranking deficit was the prior term, not candidate generation.
 * **A model judge was added beyond the F26 plan.** `NvidiaJudge` (`--judge nvidia`,
-  env `NVIDIA_CLOUD_KEY`) joins the Gemini and OpenAI providers, and the dense arm
-  can now reach NVIDIA NIM embeddings. **F26 is still unrun:** no harness-level
-  LLM-judged table exists, because verification consumed the free-tier quota.
+  env `NVIDIA_CLOUD_KEY`, default model `nvidia/nemotron-3.5-lightning-30b-a3b`)
+  joins the Gemini and OpenAI providers, and the dense arm can now reach NVIDIA NIM
+  embeddings (`nvidia/nemotron-3-embed-1b`, 2048 dimensions). Both paths were then
+  verified live — a real answer and grade from the judge, and a real embedding
+  retrieved through the arm's recall path — and `--judge nvidia` with no key exits
+  2 with a message. **F26 remains unrun in the sense that matters:** no complete
+  harness-level LLM-judged table exists, because judging 206 queries is
+  network-bound and outran the command budget.
+* **F16 / D17 is closed (round 5.1).** The `[:48]` query-vector cap inside
+  `similarity_scores()` is now `QUERY_TERM_LIMIT = 48`: named, marked
+  `ASSUMPTION`, and listed in `TESTING.md` §5, which is exactly what this row's
+  acceptance asked for. The value is unchanged, so the top-10 order is unchanged
+  for a fixed corpus.
+* **D20 is new and fixed (round 5.1): the canonical full run could not be
+  finished on hardware slower than the project's CI runner.** The 10,000-memory
+  scale probe alone outlasts a short command timeout, and `M12`'s unbounded
+  ceilings make that single row cost ~213 s (137.9 s ingest, 75.7 s refresh
+  against ~5 s and ~3 s for every capped arm). The full default run is now
+  producible in bounded passes: `--phase queries` replays the query tiers and
+  writes a `--state` file, `--phase scale` resumes from it, measures the scale
+  probe and renders the report. The state's identity — seed, tiers, budget, judge
+  description, arm order, corpus size and the LoCoMo limits — is verified before
+  the second phase will render, and a mismatch exits 2 and writes nothing, so two
+  different runs cannot be spliced into one artifact; each scale row is persisted
+  as it is measured, so a timeout costs only the arm in flight; and the report
+  records the assembly in a `phases` field. The default is still a single
+  process.
+* **The committed report is regenerated (round 5.1).** `benchmarks/RESULTS.md` and
+  `benchmarks/results/raw.json` now come from the round-5 code — a full default
+  run at seed 0, 15 offline arms, the 10,000-memory scale tier — with verdict
+  **4 of 6** scored criteria passed, 1 informational and 0 not measured, and
+  `M11` at **0.893** hit rate, **0.699** nDCG@10 (0.689 packed) and **1279**
+  characters per evidence hit.
 * **Still open from this list:** **F5/F6** (not re-checked), **F12** (informational),
-  **F14/F15** (the metric, verdict and harness fixture files), **F16** (D17, the
-  hidden `[:48]` query-term cap), **F19/F20** (the scale latency and ingest
-  targets), **F22** (the two-seed run does not meet the ≥ 5 pooled-seed protocol),
-  **F23** (decay-alone still leaks 1.000 for `M11`), **F24** and **F25**.
+  **F14/F15** (the metric, verdict and harness fixture files), **F19/F20** (the
+  scale latency and ingest targets), **F22** (the hold-out run is two seeds, not
+  the ≥ 5 the protocol asks for), **F23** (decay-alone still leaks 1.000 for
+  `M11`), **F24**, **F25**, and **F26** (no complete model-judged run — the NVIDIA
+  judge answers and grades live, and a judged pass makes a real call per arm, but
+  judging 206 queries is network-bound and no full run has been scored by a
+  model).
 
 ---
 

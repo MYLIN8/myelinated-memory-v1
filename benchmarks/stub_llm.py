@@ -1,10 +1,10 @@
 """A local stub of the OpenAI chat-completions endpoint, for testing judge.py.
 
-Why this exists: there is no API key in this environment, so `OpenAIJudge`
-cannot call a real model. This module lets the LLM-judge *code path* be
-exercised end to end anyway - request construction, JSON parsing, the response
-cache, and the HTTP error path - against a server that speaks the same wire
-protocol.
+Why this exists: the judge code path must be testable without spending quota, so
+this stub stands in for whichever hosted endpoint would otherwise be called.
+This module lets that *code path* be exercised end to end anyway - request
+construction, JSON parsing, the response cache, and the HTTP error path -
+against a server that speaks the same wire protocol.
 
 What this proves and what it does not:
 
@@ -13,8 +13,8 @@ What this proves and what it does not:
            HTTP status instead of inventing a score, and - via STUB_429_ONCE -
            that the rate-limit path retries and then succeeds;
   does not prove anything about model quality. Real LLM-judged numbers need a
-  real endpoint and a key (GEMINI_KEY or OPENAI_API_KEY in Settings ->
-  Environment); this fixture never proves a model's judgement.
+  real endpoint and a key (GEMINI_KEY, OPENAI_API_KEY or NVIDIA_CLOUD_KEY in
+  Settings -> Environment); this fixture never proves a model's judgement.
 
 This is a short-lived in-process test fixture. It is started by
 `benchmarks/test_llm_judge.py` inside a single command and shut down in a

@@ -29,7 +29,7 @@ import json
 import os
 import re
 import urllib.request
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 from common import Event, Query, Scenario
 
@@ -196,11 +196,44 @@ def load_locomo(
     return scenarios
 
 
+# ------------------------------------------------------------ validation
+def validate(scenarios: Sequence[Scenario]) -> List[str]:
+    """Check the two invariants the harness silently depends on.
+
+    1. Every ``evidence_ids`` entry names a turn the same Scenario really adds.
+       ``convert`` filters on this, and if it ever stopped doing so the hit rate
+       would quietly fall while every arm looked equally bad.
+    2. Every query is asked at the conversation's last session, which is what
+       makes the shared ``common.replay`` cursor give each arm the whole
+       transcript (see the module docstring).
+    """
+    problems: List[str] = []
+    for scenario in scenarios:
+        known = {event.id for event in scenario.events if event.op == "add"}
+        last_day = max((event.day for event in scenario.events), default=0.0)
+        for query in scenario.queries:
+            if not query.evidence_ids:
+                problems.append("%s/%s: no evidence" % (scenario.id, query.id))
+            for mem_id in query.evidence_ids:
+                if mem_id not in known:
+                    problems.append("%s/%s: evidence %s is not a turn of this conversation"
+                                    % (scenario.id, query.id, mem_id))
+            if query.session != int(last_day):
+                problems.append("%s/%s: asked at session %s, not the last session (%d)"
+                                % (scenario.id, query.id, query.session, int(last_day)))
+    return problems
+
+
 if __name__ == "__main__":
     if not available():
         print("locomo cache missing; downloading via download()")
         download()
     scenarios = load_locomo()
+    problems = validate(scenarios)
+    if problems:
+        for problem in problems[:20]:
+            print("FAIL", problem)
+        raise SystemExit(1)
     print(
         "locomo ok: %d scenarios, %d queries, %d turns"
         % (

@@ -31,7 +31,6 @@ import sys
 import time
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-import common
 import judge as judge_mod
 import metrics
 import stats
@@ -48,7 +47,13 @@ SCALE_DAYS = 60
 # the median of the per-pass values (defect D2 reaching the decision rule).
 SCALE_TIMED_PASSES = 3
 
-# The recommended configuration: every remediation applied.
+# The pre-registered hero: the round-4 recommended configuration, with every
+# remediation applied *at the time it was registered*. It is fixed and is never
+# swapped for whichever arm wins (BM-004); re-registering it is a decision-rule
+# change that needs a criteria-version bump, not an edit. Note that since round 5
+# the engine's shipped default is M11's configuration (PRIOR_WEIGHT is 0.0 while
+# M10 pins LEGACY_PRIOR_WEIGHT), so hero and shipped arm differ by that one
+# constant and the report prints both rather than quietly equating them.
 HERO_ARM = "M10 myelinated +reinforcement"
 # The specification's behaviour, kept for attribution.
 PURE_ARM = "M6 myelinated (pure)"
@@ -207,12 +212,27 @@ def _win_rate(baseline: Sequence[float], other: Sequence[float]) -> float:
 
 
 # --------------------------------------------------------------------- scale
-def scale_rows(arms: Sequence, memories: int, days: int, seed: int) -> List[Dict]:
+def scale_rows(arms: Sequence, memories: int, days: int, seed: int,
+               done: Optional[Dict[str, Dict]] = None,
+               on_row: Optional[Callable[[Dict], None]] = None) -> List[Dict]:
+    """Latency at scale, one row per arm.
+
+    ``done`` maps an arm name to a row already measured by an earlier bounded
+    pass and is reused verbatim; ``on_row`` is called after each new row so a
+    caller can persist it and resume after a command timeout (defect D20). Each
+    row is an independent measurement of one arm, so resuming loses nothing, and
+    the arms are measured in the same order with the same corpus either way.
+    """
     import synthetic
 
     events, queries = synthetic.scalability_corpus(seed=seed, n_memories=memories, days=days)
     rows: List[Dict] = []
     for arm in arms:
+        if done and arm.name in done:
+            rows.append(done[arm.name])
+            print("  %-34s (already measured by an earlier pass; reused)" % arm.name,
+                  file=sys.stderr)
+            continue
         arm.reset()
         start = time.perf_counter()
         last_day = None
@@ -272,6 +292,8 @@ def scale_rows(arms: Sequence, memories: int, days: int, seed: int) -> List[Dict
                  median(per_pass_p95), SCALE_TIMED_PASSES,
                  ", ".join("%.1f" % v for v in per_pass_p95)),
               file=sys.stderr)
+        if on_row is not None:
+            on_row(rows[-1])
     return rows
 
 
@@ -279,15 +301,18 @@ def scale_rows(arms: Sequence, memories: int, days: int, seed: int) -> List[Dict
 def verdict(summaries: Dict[str, Dict[str, float]],
             by_source: Dict[str, Dict[str, Dict[str, float]]],
             scale: Sequence[Dict],
-            pairs: List[Dict],
-            measured: Optional[Dict[str, bool]] = None) -> Dict:
+            pairs: List[Dict]) -> Dict:
     """Pre-registered criteria. Evaluated on the numbers, not chosen after.
 
     A criterion whose inputs this run never produced is reported as
     ``NOT MEASURED`` and left out of the denominator, instead of being scored a
-    phantom FAIL (defect D4).
+    phantom FAIL (defect D4). Each criterion decides that for itself from the
+    inputs it actually holds (``crit_stale_measured``, ``crit_decay_measured``,
+    ``crit_sig_measured``, ``crit_latency_measured``). There is deliberately no
+    separate "what did this run measure" switch: one existed here as an unused
+    parameter that the call site dutifully passed, which reads like a control
+    that is not wired to anything.
     """
-    measured = dict(measured or {})
     mine = summaries.get(HERO_ARM, {})
     pure = summaries.get(PURE_ARM, {})
     flat = summaries.get("M1 flat/FIFO", {})
@@ -497,8 +522,13 @@ def render_report(payload: Dict) -> str:
         add("They are controls, not baselines: none of them is the arm the engine is judged against.")
         add("")
         control_rows = []
-        for name in ("M3 semantic/BM25",) + tuple(controls) + (
-                PURE_ARM, "M8 myelinated +knapsack", "M9 recency +knapsack"):
+        # Engine rows are derived from ARM_ORDER like every other engine list here.
+        # The hand-written list this replaces named "M9 recency +knapsack", which is
+        # not an arm: `summaries.get()` returned None and the row silently vanished,
+        # while the real M9 was missing from the one table it belongs in.
+        engine_rows = [name for name in ARM_ORDER
+                       if "myelinated" in name and name in summaries]
+        for name in ("M3 semantic/BM25",) + tuple(controls) + tuple(engine_rows):
             summary = summaries.get(name)
             if not summary:
                 continue
@@ -601,16 +631,20 @@ def render_report(payload: Dict) -> str:
         add(metrics.format_table(rows, ["kind"] + arms_for_table))
         add("")
 
-    add("## Scale: %d memories over %d virtual days" % (
-        payload["scale"]["memories"], payload["scale"]["days"]))
-    add("")
     if payload["scale"]["rows"]:
+        add("## Scale: %d memories over %d virtual days" % (
+            payload["scale"]["memories"], payload["scale"]["days"]))
+        add("")
         add(metrics.format_table(payload["scale"]["rows"],
                                  ["arm", "stored", "ingest_s", "refresh_total_s",
                                   "recall_p50_ms", "recall_p95_ms"]))
     else:
-        add("Not measured: this run passed `--skip-scale`, so the latency criterion below is")
-        add("reported as NOT MEASURED rather than scored on an empty table (defects D4/D15).")
+        # A skipped scale tier used to render as "Scale: 0 memories over 0 virtual
+        # days", which reads like the measurement of an empty corpus.
+        add("## Scale: not measured in this run")
+        add("")
+        add("This run passed `--skip-scale`, so the latency criterion below is reported as")
+        add("NOT MEASURED rather than scored on an empty table (defects D4/D15).")
     add("")
 
     add("## Decision rule")
@@ -625,13 +659,15 @@ def render_report(payload: Dict) -> str:
     for text, status, detail, _counted in payload["verdict"]["criteria"]:
         add("- **%s** - %s - %s" % (status, text, detail))
     add("")
-    verdict = payload["verdict"]
-    measured_n = verdict.get("measured", verdict["total"])
-    info_n = verdict.get("informational", 0)
-    unmeasured_n = verdict.get("not_measured", verdict["total"] - measured_n - info_n)
+    # Named `rule`, not `verdict`: the local used to shadow the module-level
+    # `verdict()` function inside the one function most likely to want to call it.
+    rule = payload["verdict"]
+    measured_n = rule.get("measured", rule["total"])
+    info_n = rule.get("informational", 0)
+    unmeasured_n = rule.get("not_measured", rule["total"] - measured_n - info_n)
     add("**Verdict: %d of %d scored criteria passed** - %d row%s informational (printed, not"
         " scored) and %d not measured in this run." % (
-            verdict["passed"], measured_n, info_n, "" if info_n == 1 else "s", unmeasured_n))
+            rule["passed"], measured_n, info_n, "" if info_n == 1 else "s", unmeasured_n))
     add("")
     add("The pre-registered hero is `%s` and is not swapped for whichever arm wins." % HERO_ARM)
     add("The best measured engine configuration in this run is `%s`%s." % (
@@ -735,6 +771,13 @@ def build_notes(include_network: bool) -> List[str]:
         "M3t/M3p/M3k are allocator controls, not baselines: they share BM25's ranking "
         "and vary only how the budget is filled, so they attribute the engine's "
         "budget win to its allocator rather than its store (round-4 design 4).",
+        "The engine arms are not one configuration. Since round 5 the shipped default "
+        "is PRIOR_WEIGHT = 0.0, which is M11's ordering; M6-M10 and M12 pin the "
+        "pre-round-5 LEGACY_PRIOR_WEIGHT = 0.35 so the round-4 rows stay reproducible, "
+        "and M12 additionally lifts the candidate ceilings (it reproduced M10 exactly, "
+        "which is how those ceilings were measured to be immaterial on these tiers). "
+        "The pre-registered hero is M10, so the hero row and M11's row are the "
+        "pre-registered configuration and the shipped one, one constant apart.",
         "Supersession fires on an inferred update as well as on an explicit retire: a "
         "memory at Jaccard >= 0.90 whose value words changed (different token set) is "
         "stored and the superseded entry is retired, with no signal from the caller. "
@@ -770,7 +813,11 @@ def report_path_for(args: argparse.Namespace) -> str:
         # working directory. Joining it to the harness directory turned
         # `--report benchmarks/x.md` into `benchmarks/benchmarks/x.md`.
         return os.path.abspath(args.report)
-    full = (args.tier == "all" and not args.skip_scale and args.out == RESULTS_DIR)
+    # `--out` is compared by absolute path, not as typed: `--out benchmarks/results`
+    # is the results directory under another name, and string comparison counted it
+    # as somewhere else (see raw_path_for, where that was a real overwrite).
+    full = (args.tier == "all" and not args.skip_scale
+            and os.path.abspath(args.out) == RESULTS_DIR)
     if full:
         return os.path.join(ROOT, "RESULTS.md")
     label = args.tier if args.tier != "all" else "partial"
@@ -785,7 +832,13 @@ def raw_path_for(args: argparse.Namespace) -> str:
     D15 data-loss bug, one file over). An explicit ``--out`` is honoured as
     written, because that is a scratch directory the caller chose.
     """
-    if args.out != RESULTS_DIR:
+    # Compared by absolute path, so that a relative spelling of the committed
+    # directory (`--out benchmarks/results`) cannot slip past this guard and let a
+    # scoped run overwrite `results/raw.json` - the exact data loss the guard
+    # exists to prevent, one path spelling away. An out directory that is genuinely
+    # elsewhere is still honoured as written, because that is a scratch directory
+    # the caller chose.
+    if os.path.abspath(args.out) != RESULTS_DIR:
         return os.path.join(args.out, "raw.json")
     if args.tier == "all" and not args.skip_scale:
         return os.path.join(RESULTS_DIR, "raw.json")
@@ -812,6 +865,17 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         help="include the dense-embedding arm (needs OPENAI_API_KEY "
                              "or NVIDIA_CLOUD_KEY)")
     parser.add_argument("--skip-scale", action="store_true")
+    # Two bounded passes instead of one process, for hosts whose command timeout
+    # is shorter than the full run (the scale probe at 10,000 memories alone can
+    # outlast a 3-minute limit). Both passes must agree on seed, tiers, budget,
+    # judge and arm list, the assembly is recorded in the report, and the default
+    # remains a single process - see defect D20.
+    parser.add_argument("--phase", default="full", choices=["full", "queries", "scale"],
+                        help="full = one process (default); queries = replay the query tiers "
+                             "and write --state; scale = resume from --state, measure the scale "
+                             "probe and render the report")
+    parser.add_argument("--state", default=None,
+                        help="scratch file holding the query-tier records between --phase passes")
     parser.add_argument("--scale-memories", type=int, default=SCALE_MEMORIES)
     parser.add_argument("--out", default=RESULTS_DIR)
     parser.add_argument("--report", default=None,
@@ -844,7 +908,53 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
           file=sys.stderr)
 
     arms = build_arms(include_network=args.network)
-    by_arm, ledgers = evaluate(scenarios, arms, judge, args.budget, args.judge_limit)
+    identity = {
+        "seed": args.seed,
+        "tiers": list(tiers),
+        "budget": args.budget,
+        "judge": judge_mod.describe(judge),
+        "arm_order": list(ARM_ORDER),
+        "scenario_count": len(scenarios),
+        "query_count": query_count,
+        "locomo_limit": args.locomo_limit,
+        "locomo_queries": args.locomo_queries,
+    }
+    phases = "one process"
+    if args.phase == "queries":
+        if not args.state:
+            print("[error] --phase queries needs --state PATH", file=sys.stderr)
+            return 2
+        by_arm, ledgers = evaluate(scenarios, arms, judge, args.budget, args.judge_limit)
+        with open(args.state, "w", encoding="utf-8") as handle:
+            json.dump({"identity": identity, "by_arm": by_arm, "ledgers": ledgers},
+                      handle, default=str)
+            handle.write("\n")
+        print("phase=queries: %d arms, %d queries, state written to %s. Now re-run with "
+              "--phase scale, the same flags and --state %s to measure the scale probe and "
+              "write the report." % (len(arms), query_count, args.state, args.state),
+              file=sys.stderr)
+        return 0
+    if args.phase == "scale":
+        if not args.state or not os.path.exists(args.state):
+            print("[error] --phase scale needs a --state file written by --phase queries",
+                  file=sys.stderr)
+            return 2
+        with open(args.state, "r", encoding="utf-8") as handle:
+            state = json.load(handle)
+        # Both halves must be the same run: the same seed, tiers, budget, judge and
+        # arm list. Otherwise the artifact would be a splice of two different runs
+        # wearing one command line, which is the quiet incomparability the D15
+        # output guard exists to prevent.
+        if state.get("identity") != identity:
+            print("[error] the state file was produced by a different run - seed, tiers, "
+                  "budget, judge or arm list differ. Replay --phase queries with these flags "
+                  "first.", file=sys.stderr)
+            return 2
+        by_arm, ledgers = state["by_arm"], state["ledgers"]
+        phases = "two bounded passes of one configuration: --phase queries (query tiers) " \
+                 "then --phase scale (scale probe), same seed, tiers, budget, judge and arms"
+    else:
+        by_arm, ledgers = evaluate(scenarios, arms, judge, args.budget, args.judge_limit)
     judge_ledger = {
         key: sum(per_arm.get(key, 0) for per_arm in ledgers.values())
         for key in ("judged", "skipped", "errored")
@@ -858,16 +968,40 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.skip_scale:
         scale = {"memories": 0, "days": 0, "rows": []}
     else:
+        # A bounded pass can be cut off by a command timeout; every row it did
+        # measure is kept next to the state file and reused, so the artifact is
+        # still one configuration, one corpus and one arm order (defect D20).
+        progress_path = (args.state + ".scale.json") if args.state else None
+        measured: Dict[str, Dict] = {}
+        if progress_path and os.path.exists(progress_path):
+            with open(progress_path, "r", encoding="utf-8") as handle:
+                measured = {row["arm"]: row for row in json.load(handle)}
+
+        def _on_row(row: Dict, _path=progress_path, _seen=measured) -> None:
+            _seen[row["arm"]] = row
+            if _path:
+                with open(_path, "w", encoding="utf-8") as handle:
+                    json.dump(list(_seen.values()), handle, indent=2, default=str)
+
+        # The arms the scale probe measures, captured once so the note below counts
+        # them and not `ARM_ORDER`, which also lists the opt-in network arm.
+        scale_arms = build_arms(include_network=False)
         scale = {
             "memories": args.scale_memories,
             "days": SCALE_DAYS,
-            "rows": scale_rows(build_arms(include_network=False), args.scale_memories,
-                               SCALE_DAYS, args.seed),
+            "rows": scale_rows(scale_arms, args.scale_memories,
+                               SCALE_DAYS, args.seed, done=measured, on_row=_on_row),
         }
+        if measured:
+            phases += ("; the scale probe was resumed across bounded passes (%d of %d arms "
+                       "reused from an earlier pass, not re-measured)"
+                       % (len(measured), len(scale_arms)))
 
     payload = {
         "generated": datetime.datetime.now().isoformat(timespec="seconds"),
-        "command": "python3 benchmarks/run_bench.py " + " ".join(sys.argv[1:]),
+        "command": ("python3 benchmarks/run_bench.py " + " ".join(sys.argv[1:])
+                    + ("" if args.phase == "scale" else "")),
+        "phases": phases,
         "python": platform.python_version(),
         "judge": judge_mod.describe(judge),
         "judge_mode": judge.mode,
@@ -888,8 +1022,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "by_source": by_source,
         "pairs": pairs,
         "scale": scale,
-        "verdict": verdict(summaries, by_source, scale["rows"], pairs,
-                           measured={"scale": bool(scale["rows"]), "pairs": bool(pairs)}),
+        "verdict": verdict(summaries, by_source, scale["rows"], pairs),
         "notes": build_notes(args.network),
         "records_by_arm": trim_records(by_arm),
     }

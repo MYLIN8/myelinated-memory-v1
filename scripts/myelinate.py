@@ -8,7 +8,7 @@ decides how much of a memory's text is rendered into the context budget:
 
     Active   (score >  0.5)  full text
     Latent   (0.1 - 0.5)     one-line summary
-    Archived (score <= 0.1)  short gist, or an id stub when very weak
+    Archived (score <= 0.1)  short gist (64 chars; recall no longer emits raw id stubs)
 
 Zero dependencies, stdlib only. Targets Python 3.11 but runs on 3.10.
 
@@ -21,8 +21,9 @@ able to attribute any improvement to a named change:
     similarity=True   blend query similarity into recall ranking   (R1)
     knapsack=True     pack the budget by expected value per char   (R4/R7)
     stale_retirement=True   honour supersede/retire                (R5)
+    auto_supersede=True     store a changed-value update instead of absorbing it (D14/R5b)
 
-With all three off the engine behaves exactly as the original specification
+With the first three off the engine behaves exactly as the original specification
 describes, which is what the "M6 pure" benchmark arm measures.
 """
 
@@ -110,6 +111,11 @@ MAX_POSTINGS_SCAN = 96
 # Recall only ranks this many memories before packing. The budget fills long
 # before the pool is exhausted, and an unbounded scan makes every recall O(n).
 RECALL_POOL = 600
+# ASSUMPTION (D17): how many of the highest-weighted query terms contribute to the
+# cosine. It is a work bound on the per-memory dot product, not a measured
+# optimum. It used to be a bare literal inside ``similarity_scores``, which hid a
+# ranking parameter from the tuning inventory and from every sweep.
+QUERY_TERM_LIMIT = 48
 
 # ---- knapsack packing weights (R4/R7) -------------------------------------
 # ASSUMPTION: how much of a memory's usefulness survives at each detail level.
@@ -433,7 +439,7 @@ class MyelinatedMemory:
     def _candidates(self, sketch: Tuple[int, ...], limit: Optional[int] = None) -> List[str]:
         """Most likely near-duplicates, ranked by how many sketch keys they share.
 
-        Keys are read rarest-first and the scan stops at ``MAX_POSTINGS_SCAN``
+        Keys are read rarest-first and the scan stops at ``max_postings_scan``
         postings, so one common key can never make a lookup scan the whole
         store. Candidates are then ordered by shared-key count rather than by
         insertion order: with a small vocabulary many memories collide on a few
@@ -521,7 +527,18 @@ class MyelinatedMemory:
             self.access(duplicate.id, now=now)
             if protected and not duplicate.protected:
                 duplicate.protected = True
+                # Pin the stored score too, so ``score`` and the derived
+                # ``strength()`` agree - a protected memory's strength is
+                # PROTECTED_SCORE whatever ``score`` holds (``pin()`` does the
+                # same). Leaving it at 0.60 made ``refresh()`` report this memory
+                # as *decayed* on the next boundary, because realize() raised its
+                # score from 0.60 to 1.0.
+                duplicate.score = PROTECTED_SCORE
                 duplicate.tier = tier_for(duplicate.score, True)
+                # D9 invariant: every mutator funnels through _touch() so the cached
+                # state (dirty set, TF-IDF index) cannot go stale. This branch was
+                # the one mutator that skipped it.
+                self._touch(duplicate)
         else:
             mem = Memory(
                 id=memory_id or self._new_id(content),
@@ -655,7 +672,7 @@ class MyelinatedMemory:
         q_norm = math.sqrt(sum(w * w for w in q_vec.values()))
         if q_norm == 0.0:
             return {}
-        items = sorted(q_vec.items(), key=lambda kv: -kv[1])[:48]
+        items = sorted(q_vec.items(), key=lambda kv: -kv[1])[:QUERY_TERM_LIMIT]
         out: Dict[str, float] = {}
         for mem_id, vec in self._dvec.items():
             norm = self._dnorm.get(mem_id, 0.0)
@@ -721,6 +738,12 @@ class MyelinatedMemory:
     def _collapse_duplicates(self, touched_ids: List[str]) -> int:
         merged = 0
         ordered = [self.memories[i] for i in touched_ids if i in self.memories]
+        # Raw scores are comparable here for exactly one reason: refresh() realizes
+        # every memory at ``now`` immediately before calling this, so every
+        # comparison below (and in _merge_into) shares a single reference time.
+        # A future caller that has NOT realized first must compare
+        # ``strength(m, now)`` instead, or it compares values measured at
+        # different times - which is the D1 error in a new coat.
         ordered.sort(key=lambda m: (-m.score, m.created))
         for mem in ordered:
             if mem.id not in self.memories or mem.retired:
@@ -762,6 +785,11 @@ class MyelinatedMemory:
         return merged
 
     def _cluster(self, touched_ids: List[str]) -> int:
+        # Deliberately still governed by the module constants MAX_POSTINGS_SCAN and
+        # MAX_CANDIDATES rather than by the per-instance recall knobs: clustering is
+        # an ingest-time consolidation step, and the knobs exist to attribute
+        # *recall* differences. Wiring them in here would change measured ingest
+        # cost for any arm that lifts a ceiling - a different experiment.
         reps_index: Dict[int, List[str]] = {}
         rep_of: Dict[str, str] = {}
         counts: Dict[str, int] = {}
@@ -1039,11 +1067,22 @@ class MyelinatedMemory:
         return len(self.memories)
 
     def stats(self) -> Dict:
+        """Tier distribution and mean strength, derived at the current clock.
+
+        Both read ``strength(mem, now)``, not the stored ``mem.score``. ``score``
+        is only the strength *as of* ``score_at`` (D1), so reporting it directly
+        made this disagree with what recall would do: a store left dormant for a
+        month reported Active memories that recall would have packed as archived.
+        """
+        now = self.clock()
         counts = {"active": 0, "latent": 0, "archived": 0}
         protected = 0
         retired = 0
+        total_strength = 0.0
         for mem in self.memories.values():
-            counts[tier_for(mem.score, mem.protected)] += 1
+            strength = self.strength(mem, now)
+            counts[tier_for(strength, mem.protected)] += 1
+            total_strength += strength
             protected += 1 if mem.protected else 0
             retired += 1 if mem.retired else 0
         return {
@@ -1051,9 +1090,7 @@ class MyelinatedMemory:
             "protected": protected,
             "retired": retired,
             "tiers": counts,
-            "avg_score": (sum(m.score for m in self.memories.values()) / len(self.memories))
-            if self.memories
-            else 0.0,
+            "avg_score": (total_strength / len(self.memories)) if self.memories else 0.0,
         }
 
 
@@ -1140,8 +1177,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     if args.command == "list":
+        # Derived strength, not the stored score: ``score`` is only the value as of
+        # ``score_at`` (D1), so printing it showed pre-decay numbers that recall
+        # would never have produced.
+        now = engine.clock()
         for mem in engine.ordered():
-            print("%s\t%.4f\t%s%s\t%s" % (mem.id, mem.score, mem.tier,
+            print("%s\t%.4f\t%s%s\t%s" % (mem.id, engine.strength(mem, now), mem.tier,
                                           " retired" if mem.retired else "", mem.summary))
         return 0
 

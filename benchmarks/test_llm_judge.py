@@ -5,8 +5,8 @@ workspace carries a free-tier ``GEMINI_KEY`` and an ``NVIDIA_CLOUD_KEY``), these
 tests still never call them: every request goes to `benchmarks/stub_llm.py`, a
 local server that speaks the same chat-completions wire protocol. That matters
 more than it sounds - a test suite that quietly spends the user's quota is worse
-than no test suite, so the key names are cleared and restored around every
-selection check.
+than no test suite, so the key names *and* the endpoint/model/limit overrides are
+cleared and restored around every check that asserts a default.
 
 Scope, stated plainly: it verifies REQUEST SHAPE, RESPONSE PARSING, the
 per-instance CACHE, the HTTP ERROR path, the RATE-LIMIT pacing, the RETRY path
@@ -44,20 +44,29 @@ from stub_llm import reset_throttle, serve_in_thread  # noqa: E402
 _KEY_NAMES = ("OPENAI_API_KEY", "GEMINI_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
               "NVIDIA_CLOUD_KEY", "NVIDIA_API_KEY")
 
+# The endpoint, model and limit names the judges also read. Clearing only the API
+# keys was not enough: an exported NVIDIA_BASE_URL or GEMINI_MODEL would override
+# a default and fail an assertion that compares against the module constant, so
+# the "never depends on the machine" promise above was not actually kept.
+_CONFIG_NAMES = ("OPENAI_BASE_URL", "OPENAI_MODEL", "GEMINI_BASE_URL", "GEMINI_MODEL",
+                 "NVIDIA_BASE_URL", "NVIDIA_MODEL", "JUDGE_MIN_INTERVAL",
+                 "JUDGE_MAX_CALLS", "JUDGE_MAX_RETRIES")
+_CLEARED_NAMES = _KEY_NAMES + _CONFIG_NAMES
+
 
 @contextmanager
 def keys(**overrides: str):
     """Run a block with exactly ``overrides`` set and every other key absent."""
-    saved: Dict[str, str] = {name: os.environ[name] for name in _KEY_NAMES
+    saved: Dict[str, str] = {name: os.environ[name] for name in _CLEARED_NAMES
                              if name in os.environ}
     try:
-        for name in _KEY_NAMES:
+        for name in _CLEARED_NAMES:
             os.environ.pop(name, None)
         for name, value in overrides.items():
             os.environ[name] = value
         yield
     finally:
-        for name in _KEY_NAMES:
+        for name in _CLEARED_NAMES:
             os.environ.pop(name, None)
         os.environ.update(saved)
 
@@ -142,23 +151,23 @@ def main() -> int:
         check(paced.cache_hits == hits_before + 1, "a repeated payload must hit the cache")
         check(len(sleeps) == 1, "a cached payload must never be paced again")
 
-        # Free-tier defaults, checked without a request. Compared against the
-        # module constants rather than literals, so a deliberate override in the
-        # environment cannot make the suite flaky.
-        default_gem = GeminiJudge(api_key="stub-key")
-        check(GeminiJudge.default_min_interval_s == 4.0,
-              "the documented Gemini pace is one request every 4 s (about 15 RPM)")
-        check(default_gem.min_interval >= GeminiJudge.default_min_interval_s,
-              "the default pace must not be faster than the documented one, got %r"
-              % default_gem.min_interval)
-        if os.environ.get("JUDGE_MAX_CALLS") is None:
+        # Free-tier defaults, checked without a request. Asserted inside keys()
+        # because these are exactly the values an exported GEMINI_BASE_URL or
+        # JUDGE_MAX_CALLS would otherwise move.
+        with keys():
+            default_gem = GeminiJudge(api_key="stub-key")
+            check(GeminiJudge.default_min_interval_s == 4.0,
+                  "the documented Gemini pace is one request every 4 s (about 15 RPM)")
+            check(default_gem.min_interval == GeminiJudge.default_min_interval_s,
+                  "the default pace must be the documented one, got %r"
+                  % default_gem.min_interval)
             check(default_gem.max_calls == DEFAULT_MAX_CALLS,
                   "the default call budget must be the documented one, got %r"
                   % default_gem.max_calls)
-        check(default_gem.max_calls > 0, "a call budget of zero would forbid every request")
-        check(default_gem.base_url.endswith("generativelanguage.googleapis.com/v1beta/openai"),
-              "the default endpoint must be Gemini's OpenAI-compatible one, got %r"
-              % default_gem.base_url)
+            check(default_gem.max_calls > 0, "a call budget of zero would forbid every request")
+            check(default_gem.base_url.endswith("generativelanguage.googleapis.com/v1beta/openai"),
+                  "the default endpoint must be Gemini's OpenAI-compatible one, got %r"
+                  % default_gem.base_url)
 
         # ------------------------------------------------------------------ retry
         backoff = GeminiJudge(api_key="stub-key", base_url=base_url, model="stub-model",
@@ -264,27 +273,32 @@ def main() -> int:
               "the oracle description must refuse the LLM label, got %r" % oracle_text)
         check("stub-model" in llm_text, "the LLM description must name the model, got %r" % llm_text)
         check(llm_text.startswith("LLM judge"), "the LLM description must say LLM judge")
-        gem_text = describe(GeminiJudge(api_key="stub-key"))
-        # Compared against the constant, not a literal: a retired model name is
-        # an HTTP 404 from the live endpoint, so the default does move.
-        check(gem_text == "LLM judge (gemini, %s)" % GeminiJudge.default_model,
-              "a Gemini run must be unmistakable in the report, got %r" % gem_text)
+        # The default endpoint and model id are asserted with the environment
+        # cleared: GEMINI_MODEL and NVIDIA_BASE_URL are documented overrides, so
+        # without keys() an exported value would fail these checks on a machine
+        # that is configured exactly as the README tells it to be.
+        with keys():
+            gem_text = describe(GeminiJudge(api_key="stub-key"))
+            # Compared against the constant, not a literal: a retired model name
+            # is an HTTP 404 from the live endpoint, so the default does move.
+            check(gem_text == "LLM judge (gemini, %s)" % GeminiJudge.default_model,
+                  "a Gemini run must be unmistakable in the report, got %r" % gem_text)
 
-        # The NVIDIA provider is only wired, never called here: the assertions are
-        # about the request target and the report label, because a live call needs
-        # a key and a network this suite deliberately does not use.
-        nv_default = NvidiaJudge(api_key="stub-key")
-        check(nv_default.mode == "nvidia" and nv_default.is_llm is True,
-              "the NVIDIA judge must be a model judge")
-        check(nv_default.model == NvidiaJudge.default_model,
-              "the NVIDIA model id must come from the constant, got %r" % nv_default.model)
-        check(nv_default.base_url.endswith("integrate.api.nvidia.com/v1"),
-              "the NVIDIA endpoint must be the OpenAI-compatible NIM base, got %r"
-              % nv_default.base_url)
-        check(nv_default.calls == 0, "constructing a judge must not spend a request")
-        nv_text = describe(NvidiaJudge(api_key="stub-key"))
-        check(nv_text == "LLM judge (nvidia, %s)" % NvidiaJudge.default_model,
-              "an NVIDIA run must be unmistakable in the report, got %r" % nv_text)
+            # The NVIDIA provider is only wired, never called here: the assertions
+            # are about the request target and the report label, because a live
+            # call needs a key and a network this suite deliberately does not use.
+            nv_default = NvidiaJudge(api_key="stub-key")
+            check(nv_default.mode == "nvidia" and nv_default.is_llm is True,
+                  "the NVIDIA judge must be a model judge")
+            check(nv_default.model == NvidiaJudge.default_model,
+                  "the NVIDIA model id must come from the constant, got %r" % nv_default.model)
+            check(nv_default.base_url.endswith("integrate.api.nvidia.com/v1"),
+                  "the NVIDIA endpoint must be the OpenAI-compatible NIM base, got %r"
+                  % nv_default.base_url)
+            check(nv_default.calls == 0, "constructing a judge must not spend a request")
+            nv_text = describe(NvidiaJudge(api_key="stub-key"))
+            check(nv_text == "LLM judge (nvidia, %s)" % NvidiaJudge.default_model,
+                  "an NVIDIA run must be unmistakable in the report, got %r" % nv_text)
     finally:
         shutdown()
 

@@ -7,13 +7,34 @@ replays the same seeds, tiers and budget as `run_bench.py`, swaps one module
 constant per configuration, and prints the resulting curve.
 
     python3 benchmarks/tune_probe.py                       # PRIOR_WEIGHT, the default sweep
-    python3 benchmarks/tune_probe.py --name DETAIL_VALUE ... # not wired for dicts; see --values
+    python3 benchmarks/tune_probe.py --name RECALL_POOL --values 0,200,600,2400
     python3 benchmarks/tune_probe.py --values 0,0.1,0.35 --tiers curated,synthetic
 
 It never writes `RESULTS.md` or `results/raw.json`, so a sweep cannot overwrite
 the committed evidence. A sweep run on the report's own workload is not
 out-of-sample: see the tuning protocol in `docs/TESTING.md` section 5 before
 believing any of it.
+
+The internal control
+--------------------
+A curve is only admissible with a control: one point on it whose numbers must
+reproduce a row that is already published. The arm this probe builds fixes
+`similarity`, `knapsack` and `stale_retirement` at the round-4 recommended
+configuration (arm M8) and leaves `prior_weight` unset, so the arm tracks the
+module constant that the sweep patches.
+
+That makes the control value `LEGACY_PRIOR_WEIGHT` (0.35), **not** the shipped
+default. Round 5 lowered `PRIOR_WEIGHT` to 0.0 and pinned M8 at the legacy value,
+so an arm built from the live default is a *different* configuration and cannot
+reproduce M8's published row. The control row is marked `(control)` in the
+printed table, and `--values` should always include it.
+
+The table also marks the row at the value the engine currently ships
+(`(shipped)`, 0.0 since round 5). That marker is about the *constant*, not the
+arm: every row of this sweep is built from M8's switch set, whereas the arm the
+report calls the shipped engine also enables supersession and reinforcement. A
+row here and an engine arm's row in `RESULTS.md` are therefore comparable only
+when the switch sets match.
 """
 
 from __future__ import annotations
@@ -34,14 +55,27 @@ import judge as judge_mod  # noqa: E402
 import metrics  # noqa: E402
 import myelinate  # noqa: E402
 
-# The recommended configuration from the report: query similarity on, value-per-
-# character packing on, supersession off. That is arm M8, so the row at the
-# constant's committed value must reproduce M8's published numbers - an internal
-# control for this probe.
+# The round-4 recommended configuration: query similarity on, value-per-character
+# packing on, supersession off. That is arm M8, and because the arm below leaves
+# `prior_weight` unset it tracks whatever value the sweep patches into the module,
+# so CONTROL_VALUE is the point on the curve that must reproduce M8's published
+# line. It is the LEGACY value, not the shipped default: see the module docstring.
 ARM = dict(similarity=True, knapsack=True, stale_retirement=False)
-DEFAULT_VALUES = (0.0, 0.1, 0.2, 0.35, 0.5, 1.0)
+CONTROL_ARM = "M8 myelinated +knapsack"
+CONTROL_VALUE = myelinate.LEGACY_PRIOR_WEIGHT
+SHIPPED_VALUE = myelinate.PRIOR_WEIGHT
 DEFAULT_TIERS = ("curated", "synthetic", "staleness", "locomo")
 SOURCE_KEYS = ("curated", "synthetic", "staleness (supersession)", "staleness (decay only)", "locomo (public)")
+
+
+def default_values() -> Tuple[float, ...]:
+    """The sweep grid, always containing the control and the shipped value.
+
+    Derived rather than written out, so lowering the shipped default (round 5) or
+    moving the legacy pin cannot leave the grid without the point that validates
+    the curve or the point the engine actually ships.
+    """
+    return tuple(sorted({0.0, 0.1, 0.2, 0.35, 0.5, 1.0, SHIPPED_VALUE, CONTROL_VALUE}))
 
 
 def sweep(name: str, values: Sequence[float], tiers: Sequence[str] = DEFAULT_TIERS,
@@ -70,12 +104,32 @@ def sweep(name: str, values: Sequence[float], tiers: Sequence[str] = DEFAULT_TIE
     return rows
 
 
-def format_sweep(name: str, rows: Sequence[Tuple[float, Dict, Dict]]) -> str:
+def control_note(rows: Sequence[Tuple[float, Dict, Dict]]) -> str:
+    """One line stating whether this curve can be validated at all.
+
+    A sweep without its control value is a set of numbers with nothing anchoring
+    them; that is worth saying out loud rather than leaving to the reader.
+    """
+    if any(abs(value - CONTROL_VALUE) < 1e-12 for value, _summary, _by_source in rows):
+        return ("internal control present: the row at %s=%g must reproduce arm %s's published "
+                "numbers, or the rest of the curve is not comparable to the report."
+                % ("PRIOR_WEIGHT", CONTROL_VALUE, CONTROL_ARM))
+    return ("NO INTERNAL CONTROL: this sweep does not include PRIOR_WEIGHT=%g, the value that "
+            "reproduces arm %s, so nothing here can be checked against the published report."
+            % (CONTROL_VALUE, CONTROL_ARM))
+
+
+def format_sweep(rows: Sequence[Tuple[float, Dict, Dict]]) -> str:
     header = ["value", "task_succ", "hit_rate", "ndcg@10", "chars/hit", "lat p95"] + [k[:11] for k in SOURCE_KEYS]
     lines = ["| " + " | ".join(header) + " |", "|" + "|".join(["---"] * len(header)) + "|"]
     for value, summary, by_source in rows:
+        label = "%g" % value
+        if abs(value - CONTROL_VALUE) < 1e-12:
+            label += " *(control)*"
+        elif abs(value - SHIPPED_VALUE) < 1e-12:
+            label += " *(shipped)*"
         cells = [
-            "%g" % value,
+            label,
             "%.3f" % summary["task_success"],
             "%.3f" % summary["hit_rate"],
             "%.3f" % summary["ndcg@10"],
@@ -93,8 +147,9 @@ def format_sweep(name: str, rows: Sequence[Tuple[float, Dict, Dict]]) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Sweep one engine constant (never writes the report)")
-    parser.add_argument("--name", default="PRIOR_WEIGHT", help="module constant in scripts/myelinate.py")
-    parser.add_argument("--values", default=",".join("%g" % v for v in DEFAULT_VALUES),
+    parser.add_argument("--name", default="PRIOR_WEIGHT",
+                        help="numeric module constant in scripts/myelinate.py")
+    parser.add_argument("--values", default=",".join("%g" % v for v in default_values()),
                         help="comma-separated values")
     parser.add_argument("--tiers", default=",".join(DEFAULT_TIERS))
     parser.add_argument("--seed", type=int, default=0)
@@ -103,12 +158,27 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     values = [float(v) for v in args.values.split(",") if v.strip()]
     tiers = [t.strip() for t in args.tiers.split(",") if t.strip()]
-    committed = getattr(myelinate, args.name)
-    print("%s: committed value %g; sweeping %s on %s (seed %d)"
-          % (args.name, committed, values, tiers, args.seed), file=sys.stderr)
+    committed = getattr(myelinate, args.name, None)
+    if not isinstance(committed, (int, float)) or isinstance(committed, bool):
+        # Patching a non-numeric constant (say DETAIL_VALUE, a dict) does not sweep
+        # it: it replaces it with a float and breaks every later subscript. Refuse
+        # instead of producing a curve that measures a corrupted engine.
+        print("[error] %s is %s, not a number, so it cannot be swept by value"
+              % (args.name, type(committed).__name__), file=sys.stderr)
+        return 2
+
+    if args.name == "PRIOR_WEIGHT":
+        print("%s: shipped value %g, control value %g (reproduces arm %s)"
+              % (args.name, committed, CONTROL_VALUE, CONTROL_ARM), file=sys.stderr)
+    else:
+        print("%s: shipped value %g (no internal control is defined for this constant)"
+              % (args.name, committed), file=sys.stderr)
+    print("sweeping %s on %s (seed %d)" % (values, tiers, args.seed), file=sys.stderr)
     rows = sweep(args.name, values, tiers, seed=args.seed, budget=args.budget)
+    if args.name == "PRIOR_WEIGHT":
+        print(control_note(rows), file=sys.stderr)
     print("\n### %s sweep\n" % args.name)
-    print(format_sweep(args.name, rows))
+    print(format_sweep(rows))
     return 0
 
 

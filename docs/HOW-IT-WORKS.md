@@ -38,8 +38,8 @@ Normally an AI agent has a fixed memory allowance. Everything gets the same trea
 > 900, the fixed rule archives **none**, and the same budget therefore sees **+33% more characters**
 > per memory — which is why the decay fix and the tier policy had to move together
 > ([ROUND4-DESIGN.md](ROUND4-DESIGN.md) §3). On the published run the budget-efficiency criterion
-> still passes (1276 characters per evidence hit for the shipped engine against flat memory's
-> 1734).
+> still passes (1279 characters per evidence hit for the shipped engine against flat memory's
+> 1734, on the regenerated committed report).
 
 ## 4. How recall decides what to show
 `recall()` walks memories in priority order and renders each at the highest detail level that still fits the character budget. With the defaults it does more than the original specification described, and each capability can be switched off independently (the benchmark relies on that to attribute its results):
@@ -70,4 +70,4 @@ This page describes the design; it is not evidence that the design wins. Measure
   LoCoMo (0.683) and on nDCG. What the strength, decay and tier machinery contributes is not yet
   demonstrated, which is why this page describes a design rather than a result.
 
-See [benchmarks/RESULTS.md](../benchmarks/RESULTS.md) for the full tables, [ROUND5-STRATEGY.md](ROUND5-STRATEGY.md) for what round 5 measured and what is still open, [PLAN.md](PLAN.md) for the round-3 plan — which starts by repairing the measurement — and [REMEDIATION.md](REMEDIATION.md) for what each round changed. The `PRIOR_WEIGHT` sweep that plan asked for has now been run: the instrument that produces it was itself broken (it unpacked a two-part return value as a dictionary and raised `TypeError` on every invocation), the re-run reproduces the committed control row, and the constant it measures is now **0.0** because the hold-out run passed the criterion frozen in [FIX-PLAN.md](FIX-PLAN.md) F18.
+See [benchmarks/RESULTS.md](../benchmarks/RESULTS.md) for the full tables — **regenerated from the round-5 code in 5.1**, so the published columns are the ones the shipped engine produces: `M11` at 0.893 hit rate, 0.699 nDCG@10 (0.689 packed), 1279 characters per evidence hit, and verdict 4 of 6 scored criteria — plus [ROUND5-STRATEGY.md](ROUND5-STRATEGY.md) for what round 5 measured and what is still open, [PLAN.md](PLAN.md) for the defect registry, and [REMEDIATION.md](REMEDIATION.md) for what each round changed. The `PRIOR_WEIGHT` sweep that plan asked for has now been run: the instrument that produces it was itself broken (it unpacked a two-part return value as a dictionary and raised `TypeError` on every invocation), the re-run reproduces the committed control row, and the constant it measures is now **0.0** because the hold-out run passed the criterion frozen in [FIX-PLAN.md](FIX-PLAN.md) F18.

@@ -318,6 +318,10 @@ def scalability_corpus(seed: int = 0, n_memories: int = 10000,
     score-based arm has a fair signal to work with.
     """
     rng = random.Random(seed)
+    # A non-positive horizon would schedule the "long tail" accesses at day -1,
+    # i.e. before the memories they point at. Clamp so the corpus is always
+    # replayable, whatever the caller passes.
+    days = max(1, int(days))
     events: List[Event] = []
     index: List[Tuple[str, float, str, str]] = []  # (id, day, area, thing)
     used: Set[Tuple] = set()
@@ -490,6 +494,8 @@ def _validate_staleness(scenario: Scenario, expect_retirement: bool) -> List[str
                         problems.append("%s/%s: stale/evidence Jaccard %.2f >= 0.9"
                                         % (scenario.id, query.id, score))
     return problems
+
+
 def _validate(scenario: Scenario) -> List[str]:
     problems: List[str] = []
     added_at: Dict[str, float] = {}
@@ -532,8 +538,14 @@ if __name__ == "__main__":
 
     # metrics.align pairs arms by query id across the whole run, so ids must be
     # globally unique; a collision would silently merge two different questions.
+    # The curated tier is part of that same run (run_bench composes it with these
+    # suites), so it is checked here too - it was the one tier reaching
+    # metrics.align that never passed through this guard.
+    import scenarios as curated_mod
+
+    curated_suite = curated_mod.curated()
     seen_ids: Dict[str, str] = {}
-    for scenario in scenarios + retire_suite + decay_suite:
+    for scenario in scenarios + retire_suite + decay_suite + curated_suite:
         for query in scenario.queries:
             if query.id in seen_ids:
                 problems.append("duplicate query id %s (%s and %s)"
@@ -543,6 +555,13 @@ if __name__ == "__main__":
     scale_events, scale_queries = scalability_corpus(0, n_memories=400, days=10)
     scale = Scenario("scale-smoke", "mixed", "scale smoke test", scale_events, scale_queries)
     problems += _validate(scale)
+    # The scale queries are never paired by metrics.align (they are timed, not
+    # scored), but they share the same id space and are checked with it anyway.
+    for query in scale_queries:
+        if query.id in seen_ids:
+            problems.append("duplicate query id %s (%s and %s)"
+                            % (query.id, seen_ids[query.id], scale.id))
+        seen_ids[query.id] = scale.id
     queries = sum(len(s.queries) for s in scenarios) + len(scale_queries)
     if problems:
         for problem in problems[:20]:

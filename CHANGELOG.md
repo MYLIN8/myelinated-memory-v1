@@ -10,11 +10,121 @@ results as well as the shipped ones. Where a number is quoted it is the one in
 `benchmarks/RESULTS.md` and `benchmarks/results/raw.json` for the same commit;
 nothing here is rounded up or restated more favourably than the report.
 
-**One entry is the exception and says so in its own section.** [5.0.0]'s figures
+**One entry carries a caveat and says so in its own section.** [5.0.0]'s figures
 come from scoped runs on hold-out seeds rather than from the committed report,
-because the committed `benchmarks/RESULTS.md` was deliberately **not** regenerated
-that round — it still holds the 4.0.0 columns, measured before the changes 5.0.0
-describes. Read those two as different revisions of the same tables.
+because `benchmarks/RESULTS.md` was not regenerated during that round. [5.1.0]
+then regenerated it from the round-5 code, so the committed report and the
+figures quoted under [5.1.0] are the same run, and 5.0.0's table stands as the
+hold-out confirmation of it.
+
+## [5.1.0] - 2026-10-07
+
+Round 5's published record, plus a full pass over the code for defects and stale
+text. The store schema, the decision rule and the shipped engine configuration
+are all unchanged from 5.0.0, so this is a minor bump: repairs and additions, and
+the committed benchmark report brought up to date with the engine.
+
+### Fixed
+
+- **D20 — the canonical full run could not be finished on hardware slower than
+the project's CI runner.** The 10,000-memory scale probe alone outlasts a short
+command timeout, and `M12`'s unbounded ceilings make its single row cost ~213 s
+(see the measured results below). The full default run is now producible in
+bounded passes: `--phase queries` replays the query tiers and writes a `--state`
+file, `--phase scale` resumes from it, measures the scale probe and renders the
+report. The state's identity — seed, tiers, budget, judge description, arm order,
+corpus size and the LoCoMo limits — is verified before the second phase will
+render; a mismatch exits 2 and writes nothing, so two different runs cannot be
+spliced into one artifact. Scale rows are persisted after each arm, so a timeout
+costs only the arm in flight, and the report records the assembly in a `phases`
+field. The default is still a single process.
+- **D17 — a hidden ranking parameter.** `similarity_scores` truncated the query
+vector with a bare literal `[:48]` inside the function body: not in the constants
+block, not marked `ASSUMPTION`, invisible to the tuning inventory and to every
+sweep. It is now `QUERY_TERM_LIMIT = 48`, documented and listed.
+- **A mutator that skipped the funnel.** The `add()` branch that promotes a
+collapsed duplicate to protected set `protected` and `tier` and returned — the
+one place in the engine that mutated state without going through the `_touch()`
+funnel whose own docstring claims every mutator does (the D9 lesson). It also
+left `score = 0.60` on a memory whose derived strength is `PROTECTED_SCORE`, so
+the next `refresh()` reported it as having *decayed*. It now calls `_touch()` and
+pins the score, exactly as `pin()` does.
+- **`stats()` and the CLI `list` reported pre-decay numbers.** Both read the
+stored `score`, which is the strength only *as of* `score_at`, while recall
+derives strength — so a store dormant for a month listed Active memories that
+recall would have packed as archived, and the tier counts could disagree with the
+`tier` `refresh()` had already written. Both now use `strength(mem, now)`.
+- **`common.downgrade(text, limit)` could exceed its own limit**, returning the
+bare `"..."` — three characters — for any limit below 3. It now returns `""` for
+a non-positive limit and a plain slice for 1-3, so it can never return more than
+it was asked to fit. The behaviour for `limit >= 4` is byte-identical, which is
+the only case its single caller uses.
+- **The allocator-controls table silently dropped an arm.** It named
+`"M9 recency +knapsack"`, which is not an arm, so the lookup returned `None` and
+the row vanished from the one table it belongs in. Rows are now derived from
+`ARM_ORDER`, like the file's other two engine lists, so they cannot drift.
+- **D15's output guard compared `--out` as a raw string**, so
+`--out benchmarks/results` — a relative spelling of the committed directory —
+counted as "somewhere else" and a **scoped run could overwrite
+`results/raw.json`**, the exact data loss the guard exists to prevent. Both path
+functions now compare absolute paths.
+- **The globally-unique query-id guard covered fewer tiers than the pairing
+statistics.** It checked the synthetic and staleness fixtures, while the curated
+tier reaches `metrics.align` in the same run; it now covers curated and the scale
+queries too. `scalability_corpus` also clamps `days` to at least 1, because
+`days=0` scheduled long-tail accesses at day -1, before the memories they point
+at.
+- **`tune_probe.py`'s stated internal control was wrong**, not merely stale: it
+claimed the constant's committed value reproduces arm `M8`, which stopped being
+true the moment `M8` was pinned to `LEGACY_PRIOR_WEIGHT`. The tool now derives its
+grid from a named control and shipped value and prints whether the curve still
+has its control. `--name` on a non-numeric constant exits 2 instead of replacing
+a dict with a float and breaking every later subscript.
+- **`test_llm_judge.py` was not hermetic despite claiming to be.** It cleared the
+API-key names but not the documented `*_MODEL` / `*_BASE_URL` / pacing overrides,
+so its default-assertions would fail on any machine configured the way the README
+instructs. With those cleared, two assertions became strictly stronger (`==`
+against the module constants instead of `>=` escapes).
+- `public_locomo.py` gained the `validate()` its docstring promised, wired into
+its self-check with a non-zero exit.
+
+### Added
+
+- **`benchmarks/RESULTS.md` and `benchmarks/results/raw.json` regenerated from the
+round-5 code** — the committed report had still held the 4.0.0 columns, measured
+before the ranking repair and under the old nDCG fallback. The regenerated run is
+a full default run at seed 0, all 15 offline arms, the 10,000-memory scale tier,
+and verdict **4 of 6** scored criteria passed (1 informational, 0 not measured).
+`M11` measures hit rate **0.893**, nDCG@10 **0.699** (packed 0.689), **1279**
+characters per evidence hit.
+- `--phase` and `--state` on `benchmarks/run_bench.py` (defect D20, above).
+
+### Measured results (offline oracle judge, full default run, seed 0)
+
+| arm | task success | hit rate | nDCG@10 | nDCG@10 packed | chars/hit |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| **M11** *(shipped engine)* | 0.539 | **0.893** | 0.699 | 0.689 | **1279** |
+| `M3k` BM25 + engine packer *(the control)* | 0.539 | **0.893** | **0.732** | 0.734 | 1296 |
+| `M4` semantic/TF-IDF | **0.563** | 0.874 | 0.729 | 0.729 | 1541 |
+| `M8` myelinated +knapsack *(round-4 engine)* | 0.558 | 0.835 | 0.689 | 0.639 | 1572 |
+| `M10` myelinated +reinforcement | 0.553 | 0.830 | 0.673 | 0.615 | 1596 |
+
+- **`M12`'s unbounded ceilings are immaterial to retrieval and prohibitive at
+scale.** On the query tiers it reproduces `M10` exactly, so the candidate caps
+are not what cost the ranking. On the 10,000-memory scale tier the same arm costs
+**137.9 s** to ingest and **75.7 s** to refresh, against ~5 s and ~3 s for every
+capped arm, and its recall p50 is **72.2 ms** against ~0.2 ms. That is the
+measured answer to "should the caps be lifted": not for any ranking gain, and not
+at this cost.
+
+### Not yet established
+
+- **No model-judged run of the whole suite.** The NVIDIA judge has answered and
+graded live, and a judged pass has made a real call for every arm it reached, but
+no complete run has been scored by a model — judging 206 queries is
+network-bound. Every task-success figure above is the offline oracle's.
+- **One seed** in the committed report; the hold-out confirmation in [5.0.0] is
+two seeds, not the five the protocol (F22) asks for.
 
 ## [5.0.0] - 2026-10-07
 
@@ -112,9 +222,9 @@ The full account, including the parts that did not work, is
 
 These figures come from a **scoped** run on hold-out seeds 3 and 4
 (`--tier all --skip-scale`), not from the committed report — `benchmarks/RESULTS.md`
-was deliberately **not** regenerated this round and still holds the round-4 columns
-measured under the old nDCG fallback, so the engine columns in it predate the two
-changes above.
+was not regenerated during this round, so at the time the engine columns in it
+still predated the two changes above. [5.1.0] regenerated the committed report
+from the round-5 code; this table stands as the hold-out confirmation of it.
 
 | arm | seed | task success | hit rate | nDCG@10 | nDCG@10 packed | chars/hit | LoCoMo |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -157,9 +267,10 @@ changes above.
   evidence-containment oracle's; the NVIDIA and Gemini model judges are
   integrated, their protocols are tested offline, and neither has judged a full
   run.
-- **The NVIDIA paths were not exercised live** from this host — neither the judge
-  nor the dense-embeddings arm. Their request shapes are asserted offline only,
-  and no key value is read, logged or committed anywhere.
+- **The NVIDIA paths were not exercised live during this round** — neither the
+  judge nor the dense-embeddings arm; their request shapes were asserted offline
+  only at the time these figures were taken. Both were verified live in [5.1.0].
+  No key value is read, logged or committed anywhere.
 - **The measured difficulty has moved, not disappeared.** The remaining gap is
   ordering quality (nDCG 0.702 against 0.734) and the LoCoMo tier (0.683 against
   0.717); the next experiment is specified in `docs/ROUND5-STRATEGY.md` §6 —

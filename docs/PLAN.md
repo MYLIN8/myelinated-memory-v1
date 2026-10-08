@@ -105,6 +105,8 @@ that closes it. Nothing in Gate 1 may be measured before Gate 0 lands.
 | **D16** | **Judge errors are scored as failures and reported nowhere.** `on_result` catches `JudgeError` and writes `judge_score = 0.0`; no run publishes a judged/skipped/errored count | `run_bench.py` `evaluate.on_result` | Any run that loses the API mid-flight reports a *lower* task success rather than an incomplete run | `judged`/`skipped`/`errored` counted and printed, excluded from `task_success` (same fix as D5) |
 | **D17** | **A hidden ranking parameter**: `similarity_scores()` truncates the query vector with a literal `[:48]` inside the function body — not in the constants block, not marked `ASSUMPTION`, absent from the tuning inventory | `scripts/myelinate.py`, `sorted(q_vec.items(), …)[:48]` | Every similarity score, and therefore ranking, nDCG and the whole `PRIOR_WEIGHT` result | Hoisted to `QUERY_TERM_LIMIT` with an `ASSUMPTION` note and listed in `TESTING.md` §5; top-10 ids unchanged for a fixed corpus |
 | **D18** | Small holes: `pin()` will pin a retired memory (score 1.0, still hidden); `_prune()` cannot honour `--max-entries` without enough archived entries and reports no shortfall; the CLI's `recall` calls `save()`, so a read rewrites the store; `stats._exact_two_sided_p` never reads `w_minus` | Code inspection (`myelinate.py` `pin`/`_prune`/`main`, `stats.py`) | Hygiene; none of them touches a published number | One assertion each, in `test_engine.py` / `stats.py` |
+| **D19** | **The constant-sweep instrument had never run.** `tune_probe.py` unpacked `evaluate()`'s `(records, ledgers)` return as a bare dict and died with `TypeError: tuple indices must be integers` on every invocation, so the `PRIOR_WEIGHT` curve the docs quoted had never been produced by the tool that produces it | `benchmarks/tune_probe.py`; the front page's "must be re-run before it is quoted" note | The sweep that decides the headline ranking constant, and the difference between a deferral and a crash | Fixed in round 5; the re-run's internal control, re-based on `LEGACY_PRIOR_WEIGHT` because `M8` is pinned, then held — and it decided the constant |
+| **D20** | **The canonical full run could not be finished on hardware slower than CI.** The 10,000-memory scale probe alone outlasts a short command timeout, and `M12`'s unbounded ceilings make that single row cost ~213 s (137.9 s ingest, 75.7 s refresh against ~5 s and ~3 s) | `benchmarks/run_bench.py` and the scale tier it drives | The published report could not be regenerated at all on a slower host, so the committed columns stayed stale while the code moved | Fixed in round 5.1: bounded `--phase queries` / `--phase scale` passes, an identity-checked `--state` file that refuses a mismatched pair, per-arm persistence, and the assembly recorded in a `phases` field. The default is still one process |
 
 ---
 
@@ -113,8 +115,17 @@ D14, D15, D16. **Partly closed: D2** — warm recalls are separated from cold wi
 `cold_ms` mean and the scale figures are the median of three timed passes, but the criterion itself
 is reported as `INFORMATIONAL` because two identical runs flipped its sign on this host. **Answered
 rather than patched: D7** — the control M3k beats every engine arm on hit rate and on characters per
-hit, so the budget win is allocation. **Not re-checked in this pass:** D10, D11. **Still open:** D17,
-and of D18 only `pin()` on a retired memory is fixed.
+hit, so the budget win is allocation. **Not re-checked in this pass:** D10, D11.
+
+**Round-5 and 5.1 status for this table.** **D17 is closed** — the hidden `[:48]` query-term cap is
+now `QUERY_TERM_LIMIT = 48`, marked `ASSUMPTION` and listed in `TESTING.md` §5, with the value
+unchanged. **D19 and D20 are new and fixed** (rows above): the sweep instrument that had never run,
+and the full run that could not be finished on slower hardware. **Round 5 also lowered the shipped
+`PRIOR_WEIGHT` to 0.0** on a criterion frozen in advance (`docs/FIX-PLAN.md` F18, passed on hold-out
+seeds 3–4), and **the committed report was regenerated** in 5.1 so `benchmarks/RESULTS.md` carries
+the round-5 columns instead of the round-4 ones. **Still open:** of D18, `_prune()`'s shortfall
+reporting, `recall` saving the store on a read, and the unused `w_minus` argument; and D11's claims
+register, which no script yet checks.
 
 ---
 

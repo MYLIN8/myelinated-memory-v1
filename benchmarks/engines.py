@@ -11,7 +11,8 @@ Arms:
     M2  recency / LRU        most recently touched first
     M3  semantic - lexical   BM25 top-k over the store
     M4  semantic - vector    TF-IDF cosine over the store
-    M5  semantic - dense     embedding cosine (needs OPENAI_API_KEY)
+    M5  semantic - dense     embedding cosine (needs a key: OPENAI_API_KEY
+                             or NVIDIA_CLOUD_KEY; opt-in via --network)
     M6  myelinated (pure)    the specification: query-blind, tier-ordered
     M7  = M6 + similarity    R1, blend query similarity into recall
     M8  = M7 + knapsack      R4/R7, expected-value-per-character packing
@@ -45,8 +46,9 @@ not an engine advantage; it is a capability the workload can supply to any
 store, and the interesting measurement is the decay-only suite where no retire
 signal exists at all (board ruling BM-003).
 
-Arms record per-operation latency in ``add_ms`` / ``access_ms`` / ``refresh_ms``
-/ ``recall_ms`` so the report can quote real p50/p95 numbers.
+Arms record per-operation latency in ``add_ms`` / ``access_ms`` / ``retire_ms``
+/ ``reinforce_ms`` / ``refresh_ms`` / ``recall_ms`` so the report can quote real
+p50/p95 numbers.
 """
 
 from __future__ import annotations

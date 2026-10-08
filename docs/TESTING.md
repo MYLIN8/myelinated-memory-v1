@@ -273,6 +273,7 @@ never instantiates the engine and never calls `verdict()`.
 | `RECALL_POOL` | 600 | reasoned (the budget fills long before the pool empties), never swept — probably slack at a 2,200-char budget. Consistent with `M12`: lifting it changes nothing on these tiers, because the pool cut is applied to the ranker's input while the ranking path itself scans the live store |
 | `DETAIL_VALUE` | full 1.0, summary 0.55, gist 0.25 | hand-set; the packer's entire preference order rests on these three numbers |
 | `PRIOR_WEIGHT` | **0.0** | **MEASURED (round 5)** — the first engine constant whose value was chosen by a pre-registered experiment rather than hand-set. It was 0.35 since round 1, and it was the most consequential value in the file: it is why the same cosine ranker scores nDCG 0.729 as a baseline (M4) but 0.690 with the prior blended in (M7) and 0.606 once the packer reorders (M8). It adds a query-independent constant to a cosine, so a strongly myelinated memory that says nothing about the question can outrank the one that answers it. Arm `M11` (the prior at 0.0 on hold-out seeds 3–4) passed the criterion frozen in `docs/FIX-PLAN.md` F18 — hit rate 0.893, nDCG 0.702/0.697, chars/hit 1276/1283, task success 0.539 — so the prior is demoted to a tie-breaker and the constant ships at 0.0. `LEGACY_PRIOR_WEIGHT = 0.35` pins `M6`–`M10` and `M12` so the round-4 rows stay reproducible, and `M11` tracks the shipped default instead of hardcoding it |
+| `QUERY_TERM_LIMIT` | 48 | **hoisted, not tuned** — this cap on the query vector inside `similarity_scores()` was a bare `[:48]` in the function body, invisible to this inventory and to every sweep (**D17**), until round 5.1 hoisted it into the constants block with an `ASSUMPTION` note. Its value is unchanged, so the top-10 order is byte-identical for a fixed corpus; it is listed so that a sweep can finally see it. Not yet swept — it belongs with sweep 7, since a cap on scored query terms trades ranking quality against recall cost |
 | `PROTECTED_PRIOR` | 1e6 | reasoned (effectively infinite) |
 | Workload: budget 2200, 60 days, 10 000 memories, filler rates, scenario counts | — | the workload definition itself; changing any of it redefines the benchmark and invalidates comparisons |
 
@@ -339,7 +340,11 @@ characters per hit, so the control no longer reproduces it and the sweep must be
 re-run before any of it is quoted again — the conclusion (the prior is a cost to
 ranking) is the reason to re-run it, not to trust the old curve. **That re-run
 has since been done and it decided the constant: see "Sweep 1, re-run and
-decided (round 5)" below.** The table above is kept as the round-3 record. **And the committed value is the second-worst point
+decided (round 5)" below.** The table above is kept as the round-3 record. The
+committed report itself has also been regenerated from the round-5 code (5.1.0),
+so `benchmarks/RESULTS.md` now carries the round-5 columns — `M11` at 0.893 hit
+rate, 0.699 nDCG@10 (0.689 packed) and 1279 characters per evidence hit — rather
+than the round-4 ones this caveat was written about. **And the committed value is the second-worst point
 on the curve.** At 0.00 the same engine beats the best semantic arm on hit rate
 (0.893 vs 0.874), beats BM25 on chars/hit (1265 vs 1336) and on the LoCoMo tier
 (0.683 vs 0.617), and closes most of the nDCG deficit (0.672 vs BM25's 0.732).

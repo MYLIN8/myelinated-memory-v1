@@ -1,7 +1,7 @@
 ---
 name: myelinated-memory
 description: "Use when managing a limited context budget across stored memories: tiered recall, session-boundary consolidation, supersession."
-version: 5.0.0
+version: 5.1.0
 author: Hermes Agent
 tags: [memory, myelination, recall, prioritization, context-budget]
 ---

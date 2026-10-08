@@ -997,17 +997,28 @@ class MyelinatedMemory:
         return [m.id for m in pool]
 
     def recall(self, budget: int = DEFAULT_BUDGET, now: Optional[float] = None,
-               query: Optional[str] = None, use_similarity: Optional[bool] = None) -> RecallResult:
+               query: Optional[str] = None, use_similarity: Optional[bool] = None,
+               force_similarity: Optional[bool] = None) -> RecallResult:
         """Context injection, filled to the character budget.
 
         ``query`` is optional. When present and ``similarity`` is enabled the
         ranking blends query similarity with retrieval strength (R1); otherwise
         recall stays query-blind exactly as the original specification describes.
+        ``use_similarity`` overrides the engine default when given;
+        ``force_similarity`` overrides both the default and any ``use_similarity``
+        value, so a caller can pin the behaviour for one recall without mutating
+        the engine. The CLI's ``--force-similarity``/``--no-similarity`` map to it.
         """
         now = self.clock() if now is None else now
         live = [m for m in self.memories.values() if not m.retired]
         excluded = len(self.memories) - len(live)
-        want_similarity = self.similarity if use_similarity is None else use_similarity
+        want_similarity: Optional[bool]
+        if force_similarity is not None:
+            want_similarity = force_similarity
+        elif use_similarity is not None:
+            want_similarity = use_similarity
+        else:
+            want_similarity = self.similarity
         pool, sims, current = self._ordered_candidates(query, now, want_similarity)
         result = (self._recall_knapsack(pool, sims, budget, now, current) if self.knapsack
                   else self._recall_tiered(pool, sims, budget, now, current))
@@ -1121,7 +1132,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_recall = sub.add_parser("recall", help="context injection, filled to the budget")
     p_recall.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
-    p_recall.add_argument("--query", default=None, help="blend query similarity into ranking")
+    p_recall.add_argument("--query", default=None,
+                          help="blend query similarity into ranking")
+    sim_mode = p_recall.add_mutually_exclusive_group()
+    sim_mode.add_argument("--force-similarity", dest="force_similarity",
+                          action="store_const", const=True, default=None,
+                          help="enable query similarity for this recall even when the engine default is off")
+    sim_mode.add_argument("--no-similarity", dest="force_similarity",
+                          action="store_const", const=False,
+                          help="disable query similarity for this recall even when the engine default is on")
 
     p_refresh = sub.add_parser("refresh", help="session-boundary decay + consolidation")
     p_refresh.add_argument("--max-entries", type=int, default=DEFAULT_MAX_ENTRIES,
@@ -1129,6 +1148,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("list", help="list memories")
     sub.add_parser("stats", help="show tier distribution")
+
     return parser
 
 
@@ -1165,7 +1185,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0 if ok else 1
 
     if args.command == "recall":
-        result = engine.recall(budget=args.budget, query=args.query)
+        result = engine.recall(budget=args.budget, query=args.query,
+                               force_similarity=args.force_similarity)
         engine.save()
         print(result.text)
         return 0

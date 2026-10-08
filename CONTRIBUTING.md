@@ -18,14 +18,16 @@ govern the project.
 Run from the repository root, offline, no API key:
 
 ```bash
-python3 benchmarks/test_engine.py     # the engine: 69 checks, exits 0
+python3 benchmarks/test_engine.py     # the engine: 181 checks, exits 0
 python3 benchmarks/stats.py
 python3 benchmarks/engines.py
 python3 benchmarks/judge.py
 python3 benchmarks/stub_llm.py
 python3 benchmarks/synthetic.py
 python3 benchmarks/test_llm_judge.py  # the LLM judge protocol, against a local stub
-python3 -m py_compile scripts/myelinate.py benchmarks/*.py
+python3 benchmarks/test_harness.py    # the harness: 204 checks, exits 0
+python3 scripts/myelinated_mcp.py --selftest   # the MCP server, in-process, no client needed
+python3 -m py_compile scripts/myelinate.py scripts/myelinated_mcp.py benchmarks/*.py
 ```
 
 `benchmarks/test_engine.py` also prints a small number of `KNOWN DEFECT <id> …` lines. That is the

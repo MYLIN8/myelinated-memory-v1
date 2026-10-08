@@ -46,13 +46,21 @@ jobs:
       - name: LLM judge protocol (benchmarks/test_llm_judge.py)
         run: python3 benchmarks/test_llm_judge.py
 
+      - name: Harness fixtures (benchmarks/test_harness.py)
+        run: python3 benchmarks/test_harness.py
+
       - name: Engine suite (benchmarks/test_engine.py)
         run: python3 benchmarks/test_engine.py
 
+      - name: MCP server (scripts/myelinated_mcp.py --selftest)
+        run: python3 scripts/myelinated_mcp.py --selftest
+
       - name: Compile every module
-        run: python3 -m py_compile scripts/myelinate.py benchmarks/*.py
+        run: python3 -m py_compile scripts/myelinate.py scripts/myelinated_mcp.py benchmarks/*.py
 
       - name: What this job deliberately does not run
         run: |
           echo "run_bench.py is not run here: it rewrites the committed benchmarks/RESULTS.md"
           echo "and takes ~37 s. The LLM judge and the dense-embedding arm need a key and are opt-in."
+          echo "benchmarks/chart.py is not a check: it renders charts from the committed raw.json."
+          echo "benchmarks/pool_probe.py is a diagnostic (R11), not a check."

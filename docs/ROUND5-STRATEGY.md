@@ -135,12 +135,20 @@ measured under the old fallback.
    round, read-only) to measure **pool recall@k** — the share of queries whose gold memory is in
    the pool the ranker is handed. If pool recall ≈ hit rate, the loss is candidate generation
    (consolidation, duplicate collapsing, the `recall_pool` cut, protected ordering) and not the
-   ranking formula; if pool recall ≫ hit rate, it is the ordering. This single number decides
-   which of the two remaining levers is real.
+   ranking formula; if pool recall ≫ hit rate, it is the ordering.This single number decides
+which of the two remaining levers is real. **Answered 2026-10-08** (criterion R11 in
+`docs/PLAN.md`, tool `benchmarks/pool_probe.py`): pool hit is **1.000 on every tier** — the
+ranker is always handed the gold, so candidate generation is measured out — and the residual
+loss is ordering-or-packing, concentrated entirely on LoCoMo (+0.317 gap there, ≤ 0.027
+everywhere else). The remaining lever is the ordering of a pool that already contains the
+answer.
 2. **LoCoMo (0.683 vs 0.717).** The tier is paraphrastic and multi-session, which is exactly
-   where term-overlap scoring is weakest and where a dense arm should pay. `M5
-   semantic/dense-embeddings` is wired and network-opt-in; with a key present it is the cheapest
-   available test of whether semantic recall closes this tier, and it needs no engine change.
+   where term-overlap scoring is weakest and where a dense arm should pay.`M5 semantic/dense-embeddings` is wired and network-opt-in; with a key present it is the cheapest
+available test of whether semantic recall closes this tier, and it needs no engine change.
+**Answered 2026-10-08** (criterion R10 in `docs/PLAN.md`, run and evidence there): the dense arm
+closes the tier — 0.833 hit rate against `M3k`'s 0.717 and `M11`'s 0.683, at fewer characters per
+hit than the shipped engine. The lever this unlocks is dense ranking *inside* the engine, which is
+a round-6 question, not a restatement of this one.
 3. **Allocation vs ordering, cleanly separated.** With `nDCG@10` and `nDCG@10 packed` now
    distinct, the value-per-character rule and the rank order can be scored separately for the
    first time. If ordering is what the criterion measures, the allocation rule should choose the

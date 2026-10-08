@@ -588,6 +588,13 @@ class DenseEmbeddingArm(TfidfArm):
     name = "M5 semantic/dense-embeddings"
     uses_network = True
 
+    # ASSUMPTION: transport batching only. The endpoint embeds each input
+    # independently; a 32-item batch was measured against single-item requests at
+    # cosine 1.00000000 (max |diff| 6e-8), so the batch size cannot move a
+    # ranking. It exists because one request per memory (~410 ms measured) cannot
+    # fit the LoCoMo tier inside one bounded command; the vectors are unchanged.
+    EMBED_BATCH = 32
+
     def __init__(self, api_key: str, base_url: str, model: str, timeout: float = 60.0,
                  embed_style: str = "openai") -> None:
         self.api_key = api_key
@@ -596,7 +603,14 @@ class DenseEmbeddingArm(TfidfArm):
         self.timeout = timeout
         self.embed_style = embed_style
         self.embeddings: Dict[str, List[float]] = {}
+        # Set before super().__init__(), which calls reset() -> _reset_store().
+        self._pending: Dict[str, str] = {}
         super().__init__()
+
+    def _reset_store(self) -> None:
+        self.embeddings.clear()
+        self._pending.clear()
+        super()._reset_store()
 
     @classmethod
     def from_env(cls) -> Optional["DenseEmbeddingArm"]:
@@ -645,14 +659,33 @@ class DenseEmbeddingArm(TfidfArm):
     def _add(self, content, *, memory_id=None, category="general", protected=False, now=0.0) -> str:
         mem_id = super()._add(content, memory_id=memory_id, category=category,
                               protected=protected, now=now)
-        self.embeddings[mem_id] = self._embed([content], input_type="passage")[0]
+        self._pending[mem_id] = content
+        if len(self._pending) >= self.EMBED_BATCH:
+            self._flush()
         return mem_id
 
     def _retire(self, memory_id, now=0.0) -> None:
+        self._pending.pop(memory_id, None)
         self.embeddings.pop(memory_id, None)
         super()._retire(memory_id, now)
 
+    def _flush(self) -> None:
+        """Embed queued passages in batches of ``EMBED_BATCH`` (transport only)."""
+        while self._pending:
+            chunk = list(self._pending.items())[:self.EMBED_BATCH]
+            vectors = self._embed([text for _, text in chunk], input_type="passage")
+            for (mem_id, _), vec in zip(chunk, vectors):
+                self.embeddings[mem_id] = vec
+            # Pop by chunk, not inside the zip: a short reply must not leave a
+            # queued id behind and spin this loop forever.
+            for mem_id, _ in chunk:
+                self._pending.pop(mem_id, None)
+
     def _recall(self, query, budget, now):
+        # Queued passages are embedded here at the latest, so ingest pays for
+        # most of the embedding work and only this arm's final partial batch
+        # lands in a recall latency sample.
+        self._flush()
         if not self.docs:
             return "", []
         q_vec = self._embed([query], input_type="query")[0]
@@ -687,6 +720,7 @@ class MyelinatedArm(TimedArm):
 
     def __init__(self, name: str, similarity: bool = True, knapsack: bool = True,
                  stale_retirement: bool = False, reinforcement: bool = False,
+                 auto_supersede: bool = True,
                  prior_weight: Optional[float] = None,
                  max_candidates: Optional[int] = None,
                  max_postings_scan: Optional[int] = None,
@@ -696,6 +730,10 @@ class MyelinatedArm(TimedArm):
         self.use_knapsack = knapsack
         self.stale_retirement = stale_retirement
         self.reinforcement = reinforcement
+        # The auto-update half of supersession (D13/D14): an update retires the
+        # older wording without any caller signal. Gated here so R12's control
+        # arm can switch just this off.
+        self.use_auto_supersede = auto_supersede
         self.prior_weight = prior_weight
         self.max_candidates = max_candidates
         self.max_postings_scan = max_postings_scan
@@ -714,6 +752,7 @@ class MyelinatedArm(TimedArm):
             similarity=self.use_similarity,
             knapsack=self.use_knapsack,
             stale_retirement=self.stale_retirement,
+            auto_supersede=self.use_auto_supersede,
             prior_weight=self.prior_weight,
             max_candidates=self.max_candidates,
             max_postings_scan=self.max_postings_scan,
@@ -795,6 +834,13 @@ def build_arms(include_network: bool = False) -> List[Arm]:
                       stale_retirement=True, reinforcement=True,
                       prior_weight=LEGACY_PRIOR_WEIGHT,
                       max_candidates=0, max_postings_scan=0, recall_pool=0),
+        # R12 attribution control: M9 with the auto-update half of supersession
+        # switched off - exactly one change. On the `staleness (update)` suite
+        # the pair measures what auto-retire supersession is worth when the
+        # correction arrives with no signal of any kind.
+        MyelinatedArm("M13 myelinated +supersession (auto-update off)",
+                      similarity=True, knapsack=True, stale_retirement=True,
+                      auto_supersede=False, prior_weight=LEGACY_PRIOR_WEIGHT),
     ])
     return arms
 
@@ -816,6 +862,7 @@ ARM_ORDER = [
     "M10 myelinated +reinforcement",
     "M11 myelinated +lexical ranking",
     "M12 myelinated +unbounded candidates",
+    "M13 myelinated +supersession (auto-update off)",
 ]
 
 
@@ -834,4 +881,32 @@ if __name__ == "__main__":
         "build_arms() and ARM_ORDER disagree: %r vs %r"
         % ([a.name for a in arms], offline))
     assert all(hasattr(a, "recall_ms") for a in arms)
+    # M5's batched transport, checked offline with a stubbed embedder: ingest
+    # queues and flushes in EMBED_BATCH chunks, a retired id never reaches the
+    # wire, and the remainder flushes before the first recall scores anything.
+    class _StubDense(DenseEmbeddingArm):
+        def __init__(self) -> None:
+            self.calls: List[List[str]] = []
+            super().__init__(api_key="offline", base_url="https://invalid", model="stub")
+
+        def _embed(self, texts: Sequence[str], input_type: str = "passage") -> List[List[float]]:
+            self.calls.append(list(texts))
+            return [[0.0] * 4 for _ in texts]
+
+    probe = _StubDense()
+    for i in range(5):
+        probe.add("probe memory number %d about the lake house" % i)
+    assert probe.calls == [], "ingest must batch, not embed one request per memory"
+    probe.recall("lake house")
+    assert [len(c) for c in probe.calls] == [5, 1], [len(c) for c in probe.calls]
+    assert len(probe.embeddings) == 5
+    for i in range(40):
+        probe.add("filler memory %d" % i)
+    assert len(probe.calls[-1]) == 32, "flush must fire at EMBED_BATCH"
+    doomed = probe.add("this one gets retired before it is embedded")
+    probe.retire(doomed)
+    probe.recall("filler")
+    assert [len(c) for c in probe.calls[-2:]] == [8, 1], [len(c) for c in probe.calls[-2:]]
+    assert doomed not in probe.embeddings, "a retired id must never be embedded"
+    assert max(len(c) for c in probe.calls) <= DenseEmbeddingArm.EMBED_BATCH
     print("engines ok")

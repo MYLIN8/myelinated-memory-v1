@@ -395,6 +395,47 @@ _STALENESS_CASES = (
     },
 )
 
+# R12: update-supersession cases. Old and new share >= 0.90 token Jaccard and
+# differ in exactly one value token, so the pair is an *update* by the engine's
+# rule (D13/D14) - the update path fires and the restatement path cannot absorb
+# it. These are deliberately the opposite of _STALENESS_CASES, whose pairs stay
+# below 0.9 so collapsing cannot masquerade as staleness handling.
+_UPDATE_CASES = (
+    {
+        "slug": "billing",
+        "old": ("The billing contact for the enterprise account is listed as alex and the "
+                "invoice cycle runs monthly with net thirty day payment terms, renewing "
+                "every january of the fiscal year."),
+        "new": ("The billing contact for the enterprise account is listed as sam and the "
+                "invoice cycle runs monthly with net thirty day payment terms, renewing "
+                "every january of the fiscal year."),
+        "question": "Who is the billing contact for the enterprise account?",
+        "answer": "sam",
+    },
+    {
+        "slug": "synctimes",
+        "old": ("The weekly team sync for the platform group happens on tuesday afternoons "
+                "at two pm in the large conference room on the third floor of the main "
+                "building and is recorded for anyone who cannot attend."),
+        "new": ("The weekly team sync for the platform group happens on thursday afternoons "
+                "at two pm in the large conference room on the third floor of the main "
+                "building and is recorded for anyone who cannot attend."),
+        "question": "When does the weekly team sync happen?",
+        "answer": "thursday",
+    },
+    {
+        "slug": "dbregion",
+        "old": ("The primary database for the analytics pipeline is hosted in the frankfurt "
+                "region with read replicas in amsterdam and daily backups retained for ninety "
+                "days, with quarterly restore tests performed by the infrastructure team."),
+        "new": ("The primary database for the analytics pipeline is hosted in the paris "
+                "region with read replicas in amsterdam and daily backups retained for ninety "
+                "days, with quarterly restore tests performed by the infrastructure team."),
+        "question": "Which region hosts the primary analytics database?",
+        "answer": "paris",
+    },
+)
+
 UPDATE_DAY = 40.0
 QUERY_DAY = 55
 FILLER_PER_DAY = 15
@@ -402,10 +443,16 @@ FILLER_DAYS = 15
 FILLER_TOTAL = FILLER_PER_DAY * FILLER_DAYS
 
 
-def _build_staleness(rng: random.Random, i: int, with_retirement: bool) -> Scenario:
-    """One staleness scenario. ``with_retirement`` is the only difference."""
-    case = _STALENESS_CASES[i % len(_STALENESS_CASES)]
-    mode = "retire" if with_retirement else "decay"
+def _build_staleness(rng: random.Random, i: int, with_retirement: bool,
+                     cases: Sequence = _STALENESS_CASES,
+                     tag: str = "") -> Scenario:
+    """One staleness scenario. ``with_retirement`` is the only difference.
+
+    ``cases``/``tag`` let the R12 update-supersession suite share this exact
+    builder, so its fixtures cannot drift from the staleness ones either.
+    """
+    case = cases[i % len(cases)]
+    mode = tag or ("retire" if with_retirement else "decay")
     sid = "syn-stale-%s-%s-%d" % (mode, case["slug"], i)
     old_id = "%s-old" % sid
     new_id = "%s-new" % sid
@@ -430,8 +477,12 @@ def _build_staleness(rng: random.Random, i: int, with_retirement: bool) -> Scena
 
     queries = [_query(QUERY_DAY, "%s-q1" % sid, case["question"], case["answer"],
                       [new_id], [old_id], kind="staleness")]
+    if tag == "update":
+        suffix = " (near-duplicate update, no signal of any kind)"
+    else:
+        suffix = "" if with_retirement else " (no retire event)"
     description = ("value superseded after heavy use against %d fresh filler memories%s"
-                   % (FILLER_TOTAL, "" if with_retirement else " (no retire event)"))
+                   % (FILLER_TOTAL, suffix))
     return Scenario(sid, "staleness", description, _ordered(events), queries,
                     source="synthetic")
 
@@ -455,6 +506,21 @@ def decay_only_staleness_suite(seed: int = 0) -> List[Scenario]:
     """
     rng = random.Random(seed)
     return [_build_staleness(rng, i, False) for i in range(len(_STALENESS_CASES))]
+
+
+def update_supersession_suite(seed: int = 0) -> List[Scenario]:
+    """Supersession that arrives as a near-duplicate UPDATE, with no signal (R12).
+
+    The new fact is a plain ``add`` whose text shares >= 0.90 token Jaccard with
+    the stale one but differs in a value token - no retire event, no
+    ``supersedes`` link. The engine's update path (D13/D14) is the only
+    mechanism that can retire the stale fact, which makes the auto-update half
+    of supersession attributable: compare ``M9 myelinated +supersession``
+    against ``M13 myelinated +supersession (auto-update off)``.
+    """
+    rng = random.Random(seed)
+    return [_build_staleness(rng, i, False, cases=_UPDATE_CASES, tag="update")
+            for i in range(len(_UPDATE_CASES))]
 
 
 # ------------------------------------------------------------ validation
@@ -493,6 +559,43 @@ def _validate_staleness(scenario: Scenario, expect_retirement: bool) -> List[str
                     if score >= 0.9:
                         problems.append("%s/%s: stale/evidence Jaccard %.2f >= 0.9"
                                         % (scenario.id, query.id, score))
+    return problems
+
+
+def _validate_update(scenario: Scenario) -> List[str]:
+    """The inverse of ``_validate_staleness``'s Jaccard rule (R12).
+
+    Here the stale/evidence pair MUST be a near-duplicate update - Jaccard
+    >= 0.9 with different token sets - or the engine's update path would never
+    fire and the suite would measure nothing. A restatement (identical token
+    set) would collapse instead of superseding, which is equally fatal to the
+    fixture.
+    """
+    problems = _validate(scenario)
+    added = sum(1 for e in scenario.events if e.op == "add")
+    if added <= 200:
+        problems.append("%s: only %d memories, the budget will not bind" % (scenario.id, added))
+    if any(e.op == "retire" for e in scenario.events):
+        problems.append("%s: update suite must not contain retire events" % scenario.id)
+    if any(e.supersedes for e in scenario.events):
+        problems.append("%s: update suite must not contain supersedes links" % scenario.id)
+    contents = {e.id: e.content for e in scenario.events if e.op == "add"}
+    for query in scenario.queries:
+        for stale in query.stale_ids:
+            for evidence in query.evidence_ids:
+                if stale not in contents or evidence not in contents:
+                    continue
+                old_tokens = set(tokenize(contents[stale]))
+                new_tokens = set(tokenize(contents[evidence]))
+                score = jaccard(old_tokens, new_tokens)
+                if score < 0.9:
+                    problems.append("%s/%s: stale/evidence Jaccard %.2f < 0.9 - "
+                                    "the update path cannot fire"
+                                    % (scenario.id, query.id, score))
+                if old_tokens == new_tokens:
+                    problems.append("%s/%s: stale/evidence token sets identical - a "
+                                    "restatement collapses, it does not supersede"
+                                    % (scenario.id, query.id))
     return problems
 
 
@@ -535,6 +638,9 @@ if __name__ == "__main__":
         problems += _validate_staleness(scenario, True)
     for scenario in decay_suite:
         problems += _validate_staleness(scenario, False)
+    update_suite = update_supersession_suite(0)
+    for scenario in update_suite:
+        problems += _validate_update(scenario)
 
     # metrics.align pairs arms by query id across the whole run, so ids must be
     # globally unique; a collision would silently merge two different questions.
@@ -545,7 +651,7 @@ if __name__ == "__main__":
 
     curated_suite = curated_mod.curated()
     seen_ids: Dict[str, str] = {}
-    for scenario in scenarios + retire_suite + decay_suite + curated_suite:
+    for scenario in scenarios + retire_suite + decay_suite + update_suite + curated_suite:
         for query in scenario.queries:
             if query.id in seen_ids:
                 problems.append("duplicate query id %s (%s and %s)"
@@ -568,6 +674,6 @@ if __name__ == "__main__":
             print("FAIL", problem)
         raise SystemExit(1)
     print("synthetic ok: %d scenarios, %d queries, %d scale memories; "
-          "staleness ok: %d + %d scenarios"
+          "staleness ok: %d + %d + %d scenarios"
           % (len(scenarios), queries, len(scale_events),
-             len(retire_suite), len(decay_suite)))
+             len(retire_suite), len(decay_suite), len(update_suite)))

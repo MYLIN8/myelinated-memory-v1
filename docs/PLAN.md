@@ -390,3 +390,212 @@ version 3, so the figures quoted throughout the round-3 text above (M8 0.825 hit
 are left in place as the record of what round 3 measured; nothing is compared across the change (BM-006).
 
 No source file was modified by this plan.
+
+---
+
+## Addendum 2026-10-08 — criterion R10 pre-registered before its run: the dense arm on LoCoMo
+
+Per the standing rule above (BM-002/BM-004): this criterion is frozen **before**
+`benchmarks/run_bench.py --tier locomo --skip-scale --network` produces any number, and it will
+not be edited after seeing them.
+
+**Question** (`docs/ROUND5-STRATEGY.md` §6, lever 2). The shipped engine's remaining retrieval gap
+is concentrated in the LoCoMo tier (0.683 against M3k's 0.717 on hold-out seeds 3–4), which is
+paraphrastic and multi-session — exactly where term-overlap scoring is weakest and where a dense
+arm should pay. Does semantic recall close that tier?
+
+**Arms.** One scoped run: `M5 semantic/dense-embeddings` (NVIDIA NIM
+`nvidia/nemotron-3-embed-1b`, key present in the environment) against the shipped
+`M11 myelinated +lexical ranking` and the control `M3k BM25 +engine packer`, all measured on the
+same scenarios in the same run. Offline oracle judge, 2200-character budget, seed 0, default
+LoCoMo limits (3 conversations, 20 queries each). Committed-report LoCoMo figures are context
+only; the decision uses the within-run comparison.
+
+**Decision rule, fixed now:**
+
+- **closes the tier** — M5 LoCoMo hit rate ≥ M3k's within-run hit rate **and** M5's within-run
+  characters per hit ≤ M11's;
+- **moves toward closing** — M5 LoCoMo hit rate > M11's within-run hit rate, but not the above;
+- **does not close** — otherwise.
+
+Every column measured for all three arms is reported whatever the outcome, including nDCG@10 and
+ task success, and a loss is kept.
+
+**Transport caveat, fixed before the run.** The M5 arm embeds in batches of 32 (`EMBED_BATCH`)
+instead of one request per memory: the single-item transport cannot fit this tier inside one
+bounded command (measured ≈ 410 ms per single-item request; 1451 ingest + 60 query requests
+≈ 10 minutes). Batched vectors are not bit-identical to single-item ones — measured on a
+three-text probe before this entry was written: cosine 1.00000000, maximum absolute difference
+6e-8, i.e. ranking-identical to float noise. `M5` has never appeared in the committed report
+(no key during the canonical run), so no published number moves; the run's own report is scoped
+(`raw-locomo.json` / `RESULTS-locomo.md`) and cannot overwrite the committed artifacts.
+
+### R10 result — recorded after the run (2026-10-08)
+
+Command: `python3 benchmarks/run_bench.py --tier locomo --skip-scale --network` (exit 0; judge
+`auto` = offline oracle; 60 queries per arm — 3 conversations × 20; seed 0). Evidence:
+`benchmarks/results/raw-locomo.json`, `benchmarks/RESULTS-locomo.md`.
+
+| arm | task success | hit rate | nDCG@10 | nDCG@10 packed | chars/hit |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| `M5 semantic/dense-embeddings` (NVIDIA NIM) | **0.133** | **0.833** | **0.573** | 0.573 | **2629** |
+| `M3k` BM25 + engine packer *(control)* | 0.017 | 0.717 | 0.348 | **0.375** | 3064 |
+| `M11` myelinated + lexical ranking *(shipped)* | 0.000 | 0.683 | 0.316 | 0.317 | 3213 |
+| `M4` semantic/TF-IDF *(lexical semantic, context)* | 0.050 | 0.600 | 0.317 | 0.317 | 3648 |
+
+**Decision, by the frozen rule: closes the tier.** M5's hit rate 0.833 ≥ M3k's 0.717 **and** its
+2629 chars/hit ≤ M11's 3213. Both conditions hold, so this is the stronger outcome, not merely
+"moves toward closing". The paraphrase hypothesis the run was built to test is confirmed in the
+same data: the dense arm's 0.833 against the TF-IDF semantic arm's 0.600 is the term-overlap gap
+on this tier, and it is large.
+
+What this result does **not** say:
+
+- It compares retrievers, not engine settings. The shipped engine (`M11`) is unchanged and still
+  trails both controls on this tier (0.683); nothing here licenses an "engine beats" claim.
+  The open engineering question is now concrete — dense ranking *inside* the engine (or dense
+  retrieval with the engine's packing) is the pre-registered next lever.
+- One scoped run, one seed, 60 queries, offline oracle judge. It answers the pre-registered
+  question; it is not a replacement for the committed report's protocol.
+- `M5`'s latency columns are transport-bound (network embeddings, ~483 ms p95) and its add
+  latency is lumpy by construction (a ~1.2 s flush every `EMBED_BATCH` adds, the tail at the
+  first recall). They are not engine costs.
+
+---
+
+## Addendum 2026-10-08 — criterion R11 pre-registered before its run: pool recall@k
+
+Frozen before `benchmarks/pool_probe.py` produces any number, and not edited after.
+
+**Question** (`docs/ROUND5-STRATEGY.md` §6, lever 1). `M11`'s ranker and `M4`'s are the same
+TF-IDF cosine, yet `M4` records nDCG 0.729 and `M11` 0.699 (committed report). The allocator
+accounts for 0.010 of that (`nDCG@10 packed` 0.689). The rest is lost *before* packing — either
+the ranker was never handed the gold memory (candidate generation) or it was handed it and
+ordered it too low (ordering). `engine.candidate_pool()` exists to decide which.
+
+**Method.** One run of the shipped configuration (`M11 myelinated +lexical ranking`, engine
+`MyelinatedMemory` defaults) over all four tiers, seed 0, default LoCoMo limits, 2200-character
+budget. At every query, inside the replay timeline, record `candidate_pool(query)` — the ids the
+ranker is handed, before scoring — and whether the query's gold `evidence_ids` intersect it
+("pool hit", the same any-evidence semantics as the hit rate). `benchmarks/pool_probe.py`, offline,
+does not touch the committed artifacts.
+
+**Decision rule, fixed now**, on the overall 206-query gap `pool hit rate − hit rate` (hit rate
+from the same replay, so the two are measured on identical queries):
+
+- **≤ 0.05** — the residual loss is **candidate generation**: the ranker never saw the gold, and
+  consolidation, duplicate collapsing or the recall_pool cut is where to work;
+- **≥ 0.15** — the residual loss is **ordering**: the pool had the gold and the ranking or the
+  packing dropped it;
+- **between** — mixed; both numbers are reported per tier and nothing is collapsed into one word.
+
+The per-tier table (curated / synthetic / staleness / locomo) is reported in full whatever the
+outcome, with the same numbers recomputed for the round-4 arm (`M8`) as context if the probe is
+cheap. A loss is kept.
+
+### R11 result — recorded after the run (2026-10-08)
+
+Command: `python3 benchmarks/pool_probe.py` (exit 0; offline; writes no artifact). The probe's
+replay reproduces the committed hit rates exactly (`M11` 0.893 all-tier / 0.683 LoCoMo, `M8`
+0.835), which is the cross-check that it measures the same run the report describes.
+
+| tier (queries) | `M11` pool hit | `M11` hit | gap | `M8` pool hit | `M8` hit | gap |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| curated (112) | 1.000 | 0.973 | +0.027 | 1.000 | 1.000 | +0.000 |
+| synthetic (28) | 1.000 | 1.000 | +0.000 | 1.000 | 1.000 | +0.000 |
+| staleness (3 + 3) | 1.000 | 1.000 | +0.000 | 1.000 | 1.000 | +0.000 |
+| locomo, public (60) | 1.000 | 0.683 | **+0.317** | 1.000 | 0.433 | **+0.567** |
+| **all 206** | **1.000** | 0.893 | +0.107 | 1.000 | 0.835 | +0.165 |
+
+Mean pool size 163 ids (max 600).
+
+**Decision, by the frozen rule: MIXED overall (0.107).** But the per-tier rows, which the rule
+says must not be collapsed, make the composition unambiguous:
+
+- **Candidate generation is not the bottleneck anywhere.** Pool hit is **1.000 on every tier for
+  both arms** — the ranker is always handed at least one gold memory. Consolidation, duplicate
+  collapsing and the `recall_pool` cut are measured out as the cause of the residual loss.
+- **The loss is ordering-or-packing, and it lives entirely on LoCoMo.** Everywhere else the gap
+  is ≤ 0.027 (mostly 0.000); on LoCoMo it is **+0.317** for the shipped engine and +0.567 for the
+  round-4 arm. The remaining lever is therefore the *ordering and packing of a pool that already
+  contains the answer*, on paraphrase-heavy multi-session text — consistent with R10, where dense
+  ranking closed exactly this tier.
+
+What this does not split: ordering (rank position of the gold before packing) from packing (the
+knapsack dropping it at 2200 characters). `nDCG@10` vs `nDCG@10 packed` in the report bounds that
+second split (0.010 for `M11`); a per-query pool-vs-packed probe would separate them fully and is
+the natural follow-up.
+
+---
+
+## Addendum 2026-10-08 — criterion R12 pre-registered before its run: auto-retire supersession
+
+This is the second half of `docs/FIX-PLAN.md` **W4**'s pre-registered fallback — "otherwise the
+claim is formally retired **and auto-retire supersession ships as its own arm**" — frozen before
+any measurement of it.
+
+**What ships.** A labelled pair and a fixture suite that can actually fire the mechanism:
+
+- `M13 myelinated +supersession (auto-update off)` — `M9` with `auto_supersede=False`, exactly
+  one change, so the auto-update half of supersession is attributable;
+- a **`staleness (update)`** suite (3 scenarios, same builder as the existing staleness suites):
+  the superseding fact is a **near-duplicate update** — token-set Jaccard ≥ 0.90 with one value
+  token changed — arriving as a plain `add`, with **no retire event and no `supersedes` link**.
+  The engine's update path (D13/D14) is the only thing that can retire the stale fact. The suite's
+  validator asserts the *inverse* of the existing suites' rule (Jaccard ≥ 0.90 **and** token sets
+differ), so duplicate collapsing cannot masquerade as handling here any more than it can there.
+
+**Decision rule, fixed now.** On the `staleness (update)` suite: auto-retire supersession is
+demonstrated as an attributable capability **iff `M9` stale-leak ≤ 0.20 AND `M13` stale-leak
+≥ 0.80** (and `M9`'s hit rate is not below `M13`'s). Anything else is reported as measured, and
+the capability claim is not made.
+
+Measured on a scoped staleness-tier run (`--tier staleness --skip-scale`); the committed report
+predates the arm and the suite and is not rewritten by this experiment.
+
+### R12 result — recorded after the run (2026-10-08)
+
+Command: `python3 benchmarks/run_bench.py --tier staleness --skip-scale` (exit 0; offline oracle
+judge; 9 queries per arm — 3 + 3 + 3). Evidence: `benchmarks/results/raw-staleness.json`,
+`benchmarks/RESULTS-staleness.md`.
+
+Stale-leak / hit rate on `staleness (update)`:
+
+| arm | leak | hit |
+| :--- | ---: | ---: |
+| `M9` myelinated + supersession *(auto-update on)* | 0.000 | 1.000 |
+| `M13` myelinated + supersession (auto-update off) | 0.000 | 1.000 |
+| `M8` myelinated + knapsack *(no supersession support)* | 0.000 | 1.000 |
+| `M1` flat/FIFO, `M3`/`M3t`/`M3p`/`M3k` BM25, `M4` TF-IDF | 1.000 | 1.000 |
+
+**Decision, by the frozen rule: NOT demonstrated.** `M9` ≤ 0.20 holds (0.000) but `M13` ≥ 0.80
+fails (also 0.000), so the pair does not separate the auto-update switch from anything, and the
+capability claim is not made. The negative result is kept.
+
+**Why the rule failed, measured.** The pre-registration's reasoning sentence — that duplicate
+collapsing "cannot masquerade as handling here" — was wrong, and the run is what shows it.
+`refresh()`'s `_collapse_duplicates` merges **any** pair at Jaccard ≥ 0.90 with the newer wording
+winning (`_merge_into`, D14 rule), regardless of `stale_retirement`/`auto_supersede`. On fixtures
+built at Jaccard ≥ 0.90 by design, the stale entry is therefore gone after the first session
+boundary for every engine arm — `M6` and `M8`, with no supersession support at all, included.
+The add-time auto-supersede and the refresh-time collapse reach the same end state (old gone,
+newer wording kept), and a day-55 leak metric cannot see the difference between them.
+
+What the run does establish, as a measurement of the shipped engine: **a fact superseded by a
+near-duplicate update stops surfacing — leak 0.000 for all eight engine configurations, with the
+gold answer kept (hit 1.000) — while every non-engine baseline leaks 1.000.** The mechanism is
+near-duplicate consolidation, not the auto-update switch; it is real, it is not attributable to
+the switch by this pair, and separating the two would need a query in the add-to-refresh window
+or a sub-0.90 pair with a caller signal — a different fixture, pre-registered before measured.
+
+### W4/criterion-5 resolution — the decay-alone claim is formally retired
+
+Applying W4's pre-registered bar (`leak < 0.50` with `hit_rate_decay_only ≥ 0.9 x flat`, negative
+control `M0` failing) to the re-measured decay-only suite on this tree: the **bare `M6`
+mechanism passes** (leak 0.000, hit 1.000; `M0` fails at hit 0.000) and **every configured
+engine (`M8`–`M13`) fails** (leak 1.000). The claim as it applied to the shipped engine —
+"superseded facts fade without an explicit retire signal" — is therefore **formally retired**:
+the project no longer claims it, decision-rule row 5 stays a recorded FAIL, and what is claimed
+instead is the narrower, measured statement above (near-duplicate updates are consolidated away;
+explicit `retire`/`supersede` leaks 0.000). The `M6` nuance is recorded rather than promoted:
+it is reproducible but does not survive the configuration the project ships.

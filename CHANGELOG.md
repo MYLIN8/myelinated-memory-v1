@@ -17,6 +17,82 @@ then regenerated it from the round-5 code, so the committed report and the
 figures quoted under [5.1.0] are the same run, and 5.0.0's table stands as the
 hold-out confirmation of it.
 
+## [5.2.0] - 2026-10-08
+
+The portability and honesty round: the CLI is repaired, the engine gains an MCP front door, the
+harness parts that measured everything except themselves are now tested, and two of the open
+research questions were answered by pre-registered runs — one positive (dense retrieval closes
+the LoCoMo tier), one negative (the auto-update attribution pair fails its criterion). The decay
+claim is formally retired under its own pre-registered rule. The store schema and the shipped
+engine configuration are unchanged from 5.1.0, so this is a minor bump.
+
+### Fixed
+
+- **The CLI's similarity flags were parsed but never wired.** `--force-similarity` and
+  `--no-similarity` now map to `recall(force_similarity=...)`, the duplicated unreachable block
+  after `recall()`'s return is gone, and the phantom `init`/`save`/`load` subcommands and
+  `--summary` flag (all parsed, none handled) are removed rather than left to exit 2 on users.
+  The gap that let them exist beside 170 green checks is closed by 11 new CLI-wiring checks.
+- `docs/POST.md` mixed hold-out-seed figures with committed-report figures in two chart cells;
+  every number is now labelled with the run that produced it.
+
+### Added
+
+- **`benchmarks/test_harness.py` — the W0.9/W0.10 fixtures: 204 checks** over the harness parts
+  the README listed as "still unverified": the metric definitions pinned to hand-computed values
+  (nDCG to its closed form *and* a literal), the pre-registered verdict with fixture inputs
+  (unmeasured inputs read NOT MEASURED instead of a phantom FAIL, the informational row stays
+  out of the denominator, the significance row needs BOTH flat baselines), replay determinism
+  (identical records apart from wall-clock latency), the budget invariant across every offline
+  arm at three budgets, the LoCoMo conversion validated when its cache is present (and its
+  absence checked to be a clean state), the report renderer, and the D15 output-path guards —
+  including the actual regression, a relative spelling of the results directory.
+- **`scripts/myelinated_mcp.py`** — the engine behind a stdio MCP server (JSON-RPC 2.0, zero
+  dependencies): seven memory tools, `--selftest`, verified over real pipes. Plus
+  **`docs/PORTABILITY.md`** (library API, MCP config, a LangChain-style retriever, the session
+  protocol, known limits) and **`benchmarks/chart.py`** (one command from `results/raw.json` to
+  the cost-vs-hit-rate chart; its table reproduces the published numbers).
+- **`M13 myelinated +supersession (auto-update off)`** — `M9` with one switch changed — and the
+  **`staleness (update)`** suite (3 scenarios, near-duplicate update, no signal of any kind),
+  built by the same builder as the existing staleness suites with the validator asserting the
+  inverse rule. The engine arm count is now sixteen, all derived from `ARM_ORDER`.
+- **`benchmarks/pool_probe.py`** — the R11 instrument: `candidate_pool(query)` captured inside
+  the replay timeline, read-only, writing no artifact.
+
+### Measured
+
+- **R10 (pre-registered): dense retrieval closes the LoCoMo tier.** The dense arm
+  (`nvidia/nemotron-3-embed-1b`, scoped run, 60 queries, seed 0) reaches **0.833** evidence-hit
+  rate against the shipped engine's 0.683 and the BM25 control's 0.717, at fewer characters per
+  hit than both. The engine is unchanged; this compares retrievers.
+- **R11 (pre-registered): the residual ranking loss is ordering/packing, not candidate
+generation.** Pool hit is **1.000 on every tier** for both engine arms — the ranker is always
+  handed the gold — and the gap to final hit rate is +0.317 on LoCoMo and ≤ 0.027 everywhere
+  else (overall +0.107, "mixed" by the frozen rule). The probe's replay reproduces the committed
+  hit rates exactly.
+- **R12 (pre-registered): negative result, kept.** The `M9`/`M13` pair does not separate the
+  auto-update switch: `M13` also leaks **0.000** on `staleness (update)` (rule required ≥ 0.80),
+  because `refresh()`'s near-duplicate consolidation — governed by no switch — merges any pair
+  at Jaccard ≥ 0.90 with the newer wording winning. What the run does establish: every engine
+  configuration stops surfacing a fact superseded by a near-duplicate update (0.000 leak at
+  1.000 hit) while every non-engine baseline leaks 1.000.
+- **F23/W4 resolved by its own rule: the decay-alone claim is formally retired.** Re-measured
+  decay-only: the bare `M6` mechanism passes the frozen bar (leak 0.000 at hit 1.000, negative
+  control failing) and every configured engine `M8`–`M13` fails (leak 1.000). Decision-rule row
+  5 stays a recorded FAIL; the project claims no more than the measured replacements.
+- **A third hold-out seed (5)** scoped run: `M11` hit **0.895**, nDCG@10 **0.699**, **1293**
+  chars/hit against `M3k`'s 0.895 / 0.736 / 1308 — ties retrieval, wins cost, trails ordering
+  and LoCoMo, exactly as seeds 3–4 did. Note its query count is **209**, not 206: the run
+  includes the three new update fixtures.
+
+### Not yet established
+
+- **The five-seed pooled protocol (F22).** Hold-out is now seeds 3–5 (three), not five.
+- **No model-judged full run.** Every task-success figure remains the offline oracle's.
+- **R12's mechanism separation.** Auto-update vs consolidation needs a different fixture (a
+  query in the add-to-refresh window, or a sub-0.90 pair with a caller signal), pre-registered
+  before it is measured.
+
 ## [5.1.0] - 2026-10-07
 
 Round 5's published record, plus a full pass over the code for defects and stale

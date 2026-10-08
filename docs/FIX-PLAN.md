@@ -391,6 +391,21 @@ BM25 + the engine packer. The outcome is Outcome A, cleanly: `M3k` beats every e
 (0.893 against 0.835) and on characters per hit (1296 against 1572). **F18–F25 remain open**; nothing in
 them was attempted in this pass.
 
+**Round-6 status (2026-10-08).** **F23 is resolved by its own rule.** The decay criterion was
+re-measured on this tree (`run_bench.py --tier staleness --skip-scale`, evidence
+`benchmarks/results/raw-staleness.json`): the bare `M6` mechanism passes (leak 0.000 with hit
+1.000) and every configured engine (`M8`–`M13`) fails (leak 1.000), so the claim is **formally
+retired** and decision-rule row 5 stays a recorded FAIL. Contradiction-detection shipped as its
+own labelled pair — `M13 myelinated +supersession (auto-update off)` against `M9`, over the new
+`staleness (update)` fixtures (Jaccard ≥ 0.90, one value token changed, no signal of any kind) —
+and its pre-registered criterion **failed**: `M13` also leaks 0.000, because `refresh()`'s
+near-duplicate consolidation, which no switch governs, erases the stale wording first. The
+negative result is kept (`docs/PLAN.md` R12), and separating the two mechanisms needs a different
+fixture, pre-registered before it is measured. One correction to the frozen row above, made here
+rather than in the row: its aside "M0/M2/M6 \"pass\" the decay criterion only by retrieving
+nothing" is right for M0/M2 and wrong for M6 — measured, M6 retrieves 1.000 of the evidence
+there.
+
 **Round-5 status.** **F18** was attempted on the criterion already frozen above and **passed on both
 hold-out seeds**, so the rule it wrote — a labelled `M11` ships and the prior is demoted to a tie-breaker —
 was executed: `PRIOR_WEIGHT` is now **0.0**, `LEGACY_PRIOR_WEIGHT = 0.35` pins `M6`–`M10`/`M12`, and `M11`

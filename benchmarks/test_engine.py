@@ -561,6 +561,77 @@ def test_round_five_pins_the_legacy_arms() -> None:
        "round 5 must actually change the shipped prior weight")
 
 
+def test_cli_wiring() -> None:
+    """The CLI must hand its flags to the engine, and advertise only real commands.
+
+    Two defects motivated this check and none of the 170 engine checks caught
+    either, because nothing exercised the CLI dispatch: the parser defined
+    --force-similarity/--no-similarity but main() never passed them to recall(),
+    and init/save/load appeared in --help with no handler behind them (exit 2).
+    A flag that does nothing is worse than a missing flag, so both are asserted.
+    """
+    import contextlib
+    import io
+
+    import myelinate
+
+    parser = myelinate._build_parser()
+    args = parser.parse_args(["recall", "--force-similarity"])
+    ok(args.force_similarity is True, "--force-similarity must parse to True")
+    args = parser.parse_args(["recall", "--no-similarity"])
+    ok(args.force_similarity is False, "--no-similarity must parse to False")
+    args = parser.parse_args(["recall"])
+    ok(args.force_similarity is None, "with no flag the engine default must apply")
+    # argparse prints usage to stderr before raising SystemExit; swallow it so the
+    # suite output stays clean (the assertion is the SystemExit itself).
+    with contextlib.redirect_stderr(io.StringIO()):
+        try:
+            parser.parse_args(["recall", "--force-similarity", "--no-similarity"])
+            ok(False, "the two similarity flags must be mutually exclusive")
+        except SystemExit:
+            ok(True, "the two similarity flags must be mutually exclusive")
+        for ghost in ("init", "save", "load"):
+            try:
+                parser.parse_args([ghost])
+                ok(False, "'%s' must not be advertised without a handler" % ghost)
+            except SystemExit:
+                ok(True, "'%s' must not be advertised without a handler" % ghost)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = os.path.join(tmp, "cli-wiring.json")
+        engine = MyelinatedMemory(path=store)
+        engine.add("The deploy target is production.", category="identity", now=T0)
+        engine.save()
+        captured = {}
+        original = MyelinatedMemory.recall
+
+        def spy(self, *args, **kwargs):
+            captured.update(kwargs)
+            return original(self, *args, **kwargs)
+
+        MyelinatedMemory.recall = spy
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = myelinate.main(["--store", store, "recall", "--query", "deploy",
+                                     "--force-similarity"])
+        finally:
+            MyelinatedMemory.recall = original
+        ok(rc == 0, "a wired recall must exit 0")
+        ok(captured.get("force_similarity") is True,
+           "main() must pass --force-similarity through to recall()")
+        ok(captured.get("query") == "deploy", "main() must pass the query through")
+
+        captured.clear()
+        MyelinatedMemory.recall = spy
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                myelinate.main(["--store", store, "recall", "--query", "deploy"])
+        finally:
+            MyelinatedMemory.recall = original
+        ok(captured.get("force_similarity") is None,
+           "with no CLI flag recall() must receive None, not False")
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

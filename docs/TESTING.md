@@ -11,8 +11,8 @@ changed by the review itself.
    decay, the similarity index not invalidated by `retire()`, double
    tokenisation on `add()`, a write-only cluster pass on the refresh hot path —
    lives in the one file nothing tests. **Round-4 status:** closed —
-   `benchmarks/test_engine.py` now covers the engine with 170 checks (139 after
-   round 4), and the decay, index-invalidation and update/restatement defects are
+   `benchmarks/test_engine.py` now covers the engine with 181 checks (139 after
+   round 4, 170 after round 5), and the decay, index-invalidation and update/restatement defects are
    asserted for real rather than registered as known. **Round-5 additions:** the
    settable recall parameters (`prior_weight` and the three candidate ceilings,
    `0` meaning unbounded), the read-only `candidate_pool()` diagnostic, and the
@@ -50,7 +50,8 @@ changed by the review itself.
 | `benchmarks/judge.py` | **yes**, 7 asserts | oracle extracts a line from a context; `contains` and `exact` grading; empty context → empty answer; `make_judge("oracle")` mode; `describe()` refuses the LLM label |
 | `benchmarks/stub_llm.py` | **yes**, 5 asserts | the stub's request→response mapping: answering, forced 0 score, HTTP 500 |
 | `benchmarks/test_llm_judge.py` | **yes**, 71 assertions (22 at the time of this review, 60 after round 4) | the OpenAI-, Gemini- **and** NVIDIA-protocol paths end to end against the local stub: request shape, parsing, cache, HTTP-500 error, judge selection and descriptions, round-4 coverage for the free-tier pace, the 429 backoff, `Retry-After` and the `JUDGE_MAX_CALLS` budget, and round-5 coverage proving `auto`/`oracle` stay offline with an NVIDIA key present and that Gemini and OpenAI keep selection priority |
-| `benchmarks/test_engine.py` | **yes**, 170 checks (69 at the time of this review, 139 after round 4) | the engine: bounded diminishing boost, pinned memories, tier thresholds, rendering caps, the budget guarantee on both recall paths, retired-memory exclusion, duplicate collapsing, persistence and store-path precedence — plus a `known_defect()` registry that is now **empty**: the four defects it used to report are fixed and asserted, and the mechanism stays so a new tracked defect can be registered |
+| `benchmarks/test_engine.py` | **yes**, 181 checks (69 at the time of this review, 139 after round 4, 170 after round 5) | the engine: bounded diminishing boost, pinned memories, tier thresholds, rendering caps, the budget guarantee on both recall paths, retired-memory exclusion, duplicate collapsing, persistence and store-path precedence — plus a `known_defect()` registry that is now **empty**: the four defects it used to report are fixed and asserted, and the mechanism stays so a new tracked defect can be registered |
+| `benchmarks/test_harness.py` | **yes**, 204 checks | W0.9/W0.10, the list this review called "still unverified": metric definitions pinned to hand-computed values (nDCG to its closed form and a literal), `verdict()` fixtures (NOT MEASURED over phantom FAIL, informational rows out of the denominator, BOTH flat baselines for significance), replay determinism apart from wall-clock latency, the budget invariant across every offline arm at three budgets, the LoCoMo conversion when its cache is present (and its absence a clean state), the report renderer, and the D15 output-path guards including the relative-spelling regression |
 | `benchmarks/synthetic.py` | **yes**, a validator over every scenario | unique ids and event ordering; evidence/stale exist and precede the query; the staleness suites retire (or provably do not retire) their stale ids; filler > 200 so the budget binds; stale/evidence Jaccard < 0.9 so collapsing cannot be mistaken for staleness handling; **globally unique query ids** (a collision would silently corrupt paired statistics) |
 | `benchmarks/public_locomo.py` | prints counts, **asserts nothing** | the LoCoMo conversion that defines that tier's ground truth is unverified |
 
@@ -68,7 +69,7 @@ python3 benchmarks/run_bench.py        # full run only: writes RESULTS.md + resu
 
 So the harness assertions have grown well past the roughly **48** this review
 counted — 71 of them now live in `test_llm_judge.py` alone — and the engine,
-which had none, is covered by **170 checks**. The best check in the repo is still
+which had none, is covered by **181 checks**. The best check in the repo is still
 `synthetic.py`'s validator, and it prevents a class of failure
 (query-id collisions) that would have quietly merged two different questions in
 the paired statistics. That list now includes the engine, which is the change this
@@ -151,8 +152,8 @@ Plain Python, no pytest, sibling imports — the same style as
 `benchmarks/test_llm_judge.py`, so each file runs as a script.
 
 **Status: the engine suite is implemented, green, and carries no known-defect
-lines.** `benchmarks/test_engine.py` reports **170 checks** (69 at the time of
-this review, 139 after round 4) and is listed in §1; its `known_defect()` registry is **empty**,
+lines.** `benchmarks/test_engine.py` reports **181 checks** (69 at the time of
+this review, 139 after round 4, 170 after round 5) and is listed in §1; its `known_defect()` registry is **empty**,
 because the four defects it used to report (W0.1, W0.7, D13, D14) are fixed and
 asserted. The metric, verdict and harness suites below are still W0.9–W0.10, so
 several of the cases they describe are now fixed in code but unasserted by a test.
@@ -163,7 +164,7 @@ suite is ignored within a week), the suite registers them with
 `known_defect(tracking, description, present)`:
 
 ```
-engine ok: 170 checks
+engine ok: 181 checks
   # and no KNOWN DEFECT line: W0.1, W0.7, D13 and D14 are asserted for real now
 ```
 
@@ -422,7 +423,7 @@ producing a 55.6% figure that had to be withdrawn.
 ## 6. What to do with this review
 
 W0.8 (the engine regression suite) is **delivered** — `benchmarks/test_engine.py`,
-170 checks, green, with an **empty** known-defect registry because W0.1, W0.7,
+181 checks, green, with an **empty** known-defect registry because W0.1, W0.7,
 D13 and D14 are all fixed and asserted. The remaining tests are **W0.9 (metric
 and verdict fixtures)** and **W0.10 (harness invariants)** in [PLAN.md](PLAN.md),
 and round 4 makes them the most valuable open work in this review: the

@@ -77,6 +77,7 @@ TIER_LABELS = {
     "synthetic": "synthetic",
     "staleness": "staleness (supersession)",
     "staleness-decay": "staleness (decay only)",
+    "staleness-update": "staleness (update)",
     "locomo": "locomo (public)",
 }
 
@@ -104,6 +105,7 @@ def load_scenarios(tiers: Sequence[str], locomo_limit: int, locomo_queries: int,
 
         label(synthetic.staleness_suite(seed=seed), "staleness")
         label(synthetic.decay_only_staleness_suite(seed=seed), "staleness-decay")
+        label(synthetic.update_supersession_suite(seed=seed), "staleness-update")
     if "locomo" in tiers:
         import public_locomo
 

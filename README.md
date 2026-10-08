@@ -1,6 +1,6 @@
 # Myelinated Memory
 
-> **A Hebbian retrieval-strength memory engine for Hermes Agent.**
+> **A Hebbian retrieval-strength memory engine for LLM Agents.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.md)
 [![Python 3.10 | 3.11](https://img.shields.io/badge/python-3.10%20%7C%203.11-3776ab.svg)](CONTRIBUTING.md)

@@ -42,6 +42,10 @@ from dataclasses import asdict, dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 SCHEMA_VERSION = 3
+# The released version, in one place: scripts/myelinated_mcp.py advertises it to
+# every MCP client, and benchmarks/test_engine.py pins it to the newest heading in
+# CHANGELOG.md, so a release cannot leave the two disagreeing.
+__version__ = "5.2.2"
 DEFAULT_STORE = os.path.expanduser("~/.hermes/memory/myelinated.json")
 DEFAULT_BUDGET = 2200
 SECONDS_PER_DAY = 86400.0
@@ -336,9 +340,10 @@ class MyelinatedMemory:
         # Content never changes after creation, so these are cached by id.
         self._tok: Dict[str, frozenset] = {}
         self._norm: Dict[str, str] = {}
-        self._sketch: Dict[str, Tuple[int, ...]] = {}
-        # LSH band key -> memory ids (candidate generation)
-        self._sk: Dict[Tuple[int, ...], List[str]] = {}
+        # Per-memory bottom-k sketch, cached by id (probe side: _sketch_for_content).
+        self._sketch_cache: Dict[str, Tuple[int, ...]] = {}
+        # LSH band key -> memory ids (candidate generation).
+        self._sketch_index: Dict[Tuple[int, ...], List[str]] = {}
         # Memories added or accessed since the last refresh.
         self._touched: set = set()
         # TF-IDF state for query similarity; rebuilt lazily when the store moves.
@@ -385,14 +390,16 @@ class MyelinatedMemory:
             self._tok[mem.id] = cached
         return cached
 
-    def _sketch_of(self, mem: "Memory") -> Tuple[int, ...]:
-        cached = self._sketch.get(mem.id)
+    def _sketch_for_memory(self, mem: "Memory") -> Tuple[int, ...]:
+        """The stored memory's sketch, cached by id."""
+        cached = self._sketch_cache.get(mem.id)
         if cached is None:
             cached = bottom_k_sketch(self._tok_of(mem))
-            self._sketch[mem.id] = cached
+            self._sketch_cache[mem.id] = cached
         return cached
 
-    def _sketch_for(self, content: str) -> Tuple[int, ...]:
+    def _sketch_for_content(self, content: str) -> Tuple[int, ...]:
+        """The sketch of content that is not in the store yet (a probe)."""
         return bottom_k_sketch(_keywords(content))
 
     @staticmethod
@@ -416,47 +423,54 @@ class MyelinatedMemory:
         self._tok[mem.id] = frozenset(_tokens(mem.content))
         # The sketch must be built from the SAME token set the lookup uses, or
         # inserted memories and probed memories land in different buckets.
-        sketch = self._sketch_for(mem.content)
-        self._sketch[mem.id] = sketch
+        sketch = self._sketch_for_content(mem.content)
+        self._sketch_cache[mem.id] = sketch
         self._norm[normalize(mem.content)] = mem.id
         for key in self._bands(sketch):
-            self._sk.setdefault(key, []).append(mem.id)
+            self._sketch_index.setdefault(key, []).append(mem.id)
         self._sim_dirty = True
 
     def _index_remove(self, mem: Memory) -> None:
         self._touched.discard(mem.id)
-        sketch = self._sketch.pop(mem.id, None)
+        sketch = self._sketch_cache.pop(mem.id, None)
         self._tok.pop(mem.id, None)
         self._norm.pop(normalize(mem.content), None)
         for key in self._bands(sketch or ()):
-            ids = self._sk.get(key)
+            ids = self._sketch_index.get(key)
             if ids and mem.id in ids:
                 ids.remove(mem.id)
                 if not ids:
-                    del self._sk[key]
+                    del self._sketch_index[key]
         self._sim_dirty = True
 
-    def _candidates(self, sketch: Tuple[int, ...], limit: Optional[int] = None) -> List[str]:
-        """Most likely near-duplicates, ranked by how many sketch keys they share.
+    def _rank_by_shared_keys(
+        self,
+        sketch: Tuple[int, ...],
+        postings: Dict[Tuple[int, ...], List[str]],
+        scan_cap: int,
+        cap: int,
+    ) -> List[str]:
+        """Ids ranked by how many sketch keys they share with ``sketch``.
 
-        Keys are read rarest-first and the scan stops at ``max_postings_scan``
-        postings, so one common key can never make a lookup scan the whole
-        store. Candidates are then ordered by shared-key count rather than by
-        insertion order: with a small vocabulary many memories collide on a few
-        keys, and taking the first N seen discarded the real match about a third
-        of the time.
+        The engine's one candidate-generation algorithm: ``_candidates``
+        (duplicate and update lookup) and ``_cluster`` (ingest-time consolidation)
+        differ only in which postings they read and which ceilings apply, so they
+        share this body instead of keeping two copies that can drift apart.
 
-        ``limit`` defaults to the instance's ``max_candidates``. Either way 0
-        means unbounded: no postings ceiling and no candidate ceiling is applied,
-        which is the configuration a probe uses to ask whether a capped candidate
-        set is what cost it the match.
+        Keys are read rarest-first and the scan stops after ``scan_cap`` postings,
+        so one common key can never make a lookup scan the whole store. Candidates
+        are then ordered by shared-key count rather than by insertion order: with a
+        small vocabulary many memories collide on a few keys, and taking the first
+        N seen discarded the real match about a third of the time.
+
+        A ``scan_cap`` or ``cap`` of 0 means unbounded: no postings ceiling and no
+        candidate ceiling is applied, which is the configuration a probe uses to
+        ask whether a capped candidate set is what cost it the match.
         """
-        cap = self.max_candidates if limit is None else limit
-        scan_cap = self.max_postings_scan
         shared: Dict[str, int] = {}
         scanned = 0
-        for key in sorted(self._bands(sketch), key=lambda k: len(self._sk.get(k, ()))):
-            ids = self._sk.get(key)
+        for key in sorted(self._bands(sketch), key=lambda k: len(postings.get(k, ()))):
+            ids = postings.get(key)
             if not ids:
                 continue
             for candidate in ids:
@@ -468,6 +482,15 @@ class MyelinatedMemory:
         if cap == 0 or len(ranked) <= cap:
             return [candidate for candidate, _ in ranked]
         return [candidate for candidate, _ in ranked[:cap]]
+
+    def _candidates(self, sketch: Tuple[int, ...], limit: Optional[int] = None) -> List[str]:
+        """Most likely near-duplicates in the whole store.
+
+        ``limit`` defaults to the instance's ``max_candidates``; 0 means unbounded,
+        as in ``_rank_by_shared_keys``.
+        """
+        cap = self.max_candidates if limit is None else limit
+        return self._rank_by_shared_keys(sketch, self._sketch_index, self.max_postings_scan, cap)
 
     def _find_duplicate(self, content: str) -> Optional[Memory]:
         """The *live* memory this content restates, if any.
@@ -483,7 +506,7 @@ class MyelinatedMemory:
                 return exact
         tokens = frozenset(_tokens(content))
         size = len(tokens)
-        for candidate_id in self._candidates(self._sketch_for(content)):
+        for candidate_id in self._candidates(self._sketch_for_content(content)):
             other = self.memories.get(candidate_id)
             if other is None or other.retired:
                 continue
@@ -520,52 +543,76 @@ class MyelinatedMemory:
             raise ValueError("content must not be empty")
 
         duplicate = self._find_duplicate(content)
-        mem_id: str
         if duplicate is not None and self._same_fact(content, duplicate):
-            # "dupes auto-collapse": the same token set, so the existing entry wins.
-            mem_id = duplicate.id
-            self.access(duplicate.id, now=now)
-            if protected and not duplicate.protected:
-                duplicate.protected = True
-                # Pin the stored score too, so ``score`` and the derived
-                # ``strength()`` agree - a protected memory's strength is
-                # PROTECTED_SCORE whatever ``score`` holds (``pin()`` does the
-                # same). Leaving it at 0.60 made ``refresh()`` report this memory
-                # as *decayed* on the next boundary, because realize() raised its
-                # score from 0.60 to 1.0.
-                duplicate.score = PROTECTED_SCORE
-                duplicate.tier = tier_for(duplicate.score, True)
-                # D9 invariant: every mutator funnels through _touch() so the cached
-                # state (dirty set, TF-IDF index) cannot go stale. This branch was
-                # the one mutator that skipped it.
-                self._touch(duplicate)
+            mem_id = self._collapse_into(duplicate, protected=protected, now=now)
         else:
-            mem = Memory(
-                id=memory_id or self._new_id(content),
-                content=content,
-                summary=make_summary(content),
-                category=(category or DEFAULT_CATEGORY).lower(),
-                created=now,
-                last_access=now,
-                access_count=0,
-                score=PROTECTED_SCORE if protected else INITIAL_SCORE,
-                score_at=now,
-                protected=bool(protected),
-                cluster=None,
-            )
-            mem.tier = tier_for(mem.score, mem.protected)
-            self.memories[mem.id] = mem
-            self._index_insert(mem)
-            self._touch(mem)
-            mem_id = mem.id
-            # An update (same subject, changed value) supersedes the older wording, so
-            # what recall surfaces is the correction and never the stale text.
-            if duplicate is not None and self.auto_supersede and self.stale_retirement:
-                self.retire(duplicate.id, superseded_by=mem_id)
+            mem_id = self._insert_new(
+                content, category=category, protected=protected,
+                memory_id=memory_id, now=now, duplicate=duplicate)
 
         if supersedes and self.stale_retirement:
             self.retire(supersedes, superseded_by=mem_id)
         return mem_id
+
+    def _collapse_into(self, duplicate: "Memory", protected: bool, now: float) -> str:
+        """Absorb a restatement into the entry it restates (same token set).
+
+        "dupes auto-collapse": the existing entry wins and is strengthened; the
+        only new state is a pin. Split out of ``add()`` so the write path reads as
+        the distinct outcomes it implements rather than as one long branch.
+        """
+        self.access(duplicate.id, now=now)
+        if protected and not duplicate.protected:
+            duplicate.protected = True
+            # Pin the stored score too, so ``score`` and the derived
+            # ``strength()`` agree - a protected memory's strength is
+            # PROTECTED_SCORE whatever ``score`` holds (``pin()`` does the
+            # same). Leaving it at 0.60 made ``refresh()`` report this memory
+            # as *decayed* on the next boundary, because realize() raised its
+            # score from 0.60 to 1.0.
+            duplicate.score = PROTECTED_SCORE
+            duplicate.tier = tier_for(duplicate.score, True)
+            # D9 invariant: every mutator funnels through _touch() so the cached
+            # state (dirty set, TF-IDF index) cannot go stale. This branch was
+            # the one mutator that skipped it.
+            self._touch(duplicate)
+        return duplicate.id
+
+    def _insert_new(
+        self,
+        content: str,
+        category: str,
+        protected: bool,
+        memory_id: Optional[str],
+        now: float,
+        duplicate: Optional["Memory"],
+    ) -> str:
+        """Store ``content`` as a new entry, superseding ``duplicate``'s wording.
+
+        When ``duplicate`` is a live memory with a *different* token set, this is an
+        update (same subject, changed value), so the older wording is retired and
+        what recall surfaces is the correction rather than the stale text.
+        """
+        mem = Memory(
+            id=memory_id or self._new_id(content),
+            content=content,
+            summary=make_summary(content),
+            category=(category or DEFAULT_CATEGORY).lower(),
+            created=now,
+            last_access=now,
+            access_count=0,
+            score=PROTECTED_SCORE if protected else INITIAL_SCORE,
+            score_at=now,
+            protected=bool(protected),
+            cluster=None,
+        )
+        mem.tier = tier_for(mem.score, mem.protected)
+        self.memories[mem.id] = mem
+        self._index_insert(mem)
+        self._touch(mem)
+        if duplicate is not None and self.auto_supersede and self.stale_retirement:
+            self.retire(duplicate.id, superseded_by=mem.id)
+        return mem.id
 
     def access(self, memory_id: str, now: Optional[float] = None) -> bool:
         """Hebbian boost: strengthen a memory because it was used.
@@ -756,7 +803,7 @@ class MyelinatedMemory:
             tokens = self._tok_of(mem)
             size = len(tokens)
             match = None
-            for other_id in self._candidates(self._sketch_of(mem)):
+            for other_id in self._candidates(self._sketch_for_memory(mem)):
                 if other_id == mem.id:
                     continue
                 other = self.memories.get(other_id)
@@ -801,18 +848,11 @@ class MyelinatedMemory:
         for mem in ordered:
             tokens = self._tok_of(mem)
             size = len(tokens)
-            sketch = self._sketch_of(mem)
+            sketch = self._sketch_for_memory(mem)
             rep_id = None
-            found: Dict[str, int] = {}
-            scanned = 0
-            for key in sorted(self._bands(sketch), key=lambda k: len(reps_index.get(k, ()))):
-                for candidate in reps_index.get(key, ()):
-                    found[candidate] = found.get(candidate, 0) + 1
-                    scanned += 1
-                if scanned >= MAX_POSTINGS_SCAN:
-                    break
-            ranked = sorted(found.items(), key=lambda kv: (-kv[1], kv[0]))[:MAX_CANDIDATES]
-            for candidate_id, _count in ranked:
+            ranked = self._rank_by_shared_keys(
+                sketch, reps_index, MAX_POSTINGS_SCAN, MAX_CANDIDATES)
+            for candidate_id in ranked:
                 candidate = self.memories.get(candidate_id)
                 if candidate is None:
                     continue
@@ -1072,15 +1112,31 @@ class MyelinatedMemory:
                 "store %s is schema v%d but this build understands up to v%d; "
                 "loading it would silently drop fields - upgrade the engine instead"
                 % (target, schema, SCHEMA_VERSION))
-        self.memories = {}
-        self._tok = {}
-        self._sketch = {}
-        self._norm = {}
-        self._sk = {}
-        self._touched = set()
-        self._sim_dirty = True
-        for raw in payload.get("memories", []):
+        # The top level is not the only shape that can be wrong. A file that is
+        # valid JSON but not a list of memory objects used to reach ``raw.items()``
+        # and ``Memory(**known)`` uncaught, so a wrong-shaped store escaped as an
+        # AttributeError/TypeError traceback and exit 1 - the opposite of the clean
+        # ``error: ...`` line and exit 2 that SECURITY.md promises for a corrupt
+        # store. Every shape error is now a ValueError, like the schema errors above.
+        raw_memories = payload.get("memories", [])
+        if not isinstance(raw_memories, list):
+            raise ValueError(
+                "store %s has a malformed memories section: expected a list, got %s"
+                % (target, type(raw_memories).__name__))
+        # Parse and validate the whole file before touching live state, so a
+        # malformed entry cannot leave the engine half-loaded.
+        parsed: List[Memory] = []
+        for index, raw in enumerate(raw_memories):
+            if not isinstance(raw, dict):
+                raise ValueError(
+                    "store %s has a malformed memory at index %d: expected an object, got %s"
+                    % (target, index, type(raw).__name__))
             known = {k: v for k, v in raw.items() if k in Memory.__dataclass_fields__}
+            missing = [name for name in ("id", "content") if name not in known]
+            if missing:
+                raise ValueError(
+                    "store %s has a malformed memory at index %d: missing %s"
+                    % (target, index, ", ".join(missing)))
             mem = Memory(**known)
             if not mem.summary:
                 mem.summary = make_summary(mem.content)
@@ -1089,6 +1145,16 @@ class MyelinatedMemory:
                 # access (or its creation), so decay from there and never from 0.
                 mem.score_at = mem.last_access or mem.created or 0.0
             mem.tier = tier_for(mem.score, mem.protected)
+            parsed.append(mem)
+
+        self.memories = {}
+        self._tok = {}
+        self._sketch_cache = {}
+        self._norm = {}
+        self._sketch_index = {}
+        self._touched = set()
+        self._sim_dirty = True
+        for mem in parsed:
             self.memories[mem.id] = mem
             self._index_insert(mem)
         return len(self.memories)
@@ -1130,6 +1196,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_add = sub.add_parser("add", help="add a memory (dupes auto-collapse)")
+    p_add.set_defaults(handler=_cmd_add)
     p_add.add_argument("--content", required=True)
     p_add.add_argument("--category", default=DEFAULT_CATEGORY)
     p_add.add_argument("--protected", action="store_true")
@@ -1138,15 +1205,19 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="id of the memory this one replaces")
 
     p_access = sub.add_parser("access", help="strengthen a memory when it is used")
+    p_access.set_defaults(handler=_cmd_access)
     p_access.add_argument("memory_id")
 
     p_retire = sub.add_parser("retire", help="stop surfacing a superseded memory")
+    p_retire.set_defaults(handler=_cmd_retire)
     p_retire.add_argument("memory_id")
 
     p_pin = sub.add_parser("pin", help="protect a memory from decay and pruning")
+    p_pin.set_defaults(handler=_cmd_pin)
     p_pin.add_argument("memory_id")
 
     p_recall = sub.add_parser("recall", help="context injection, filled to the budget")
+    p_recall.set_defaults(handler=_cmd_recall)
     p_recall.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
     p_recall.add_argument("--query", default=None,
                           help="blend query similarity into ranking")
@@ -1159,13 +1230,81 @@ def _build_parser() -> argparse.ArgumentParser:
                           help="disable query similarity for this recall even when the engine default is on")
 
     p_refresh = sub.add_parser("refresh", help="session-boundary decay + consolidation")
+    p_refresh.set_defaults(handler=_cmd_refresh)
     p_refresh.add_argument("--max-entries", type=int, default=DEFAULT_MAX_ENTRIES,
                            help="optional storage ceiling; 0 keeps everything (default)")
 
-    sub.add_parser("list", help="list memories")
-    sub.add_parser("stats", help="show tier distribution")
+    p_list = sub.add_parser("list", help="list memories")
+    p_list.set_defaults(handler=_cmd_list)
+    p_stats = sub.add_parser("stats", help="show tier distribution")
+    p_stats.set_defaults(handler=_cmd_stats)
 
     return parser
+
+
+# ------------------------------------------------------------------ handlers
+def _cmd_add(engine: MyelinatedMemory, args) -> int:
+    memory_id = engine.add(
+        args.content, category=args.category, protected=args.protected,
+        memory_id=args.memory_id, supersedes=args.supersedes,
+    )
+    engine.save()
+    print(memory_id)
+    return 0
+
+
+def _cmd_access(engine: MyelinatedMemory, args) -> int:
+    ok = engine.access(args.memory_id)
+    engine.save()
+    print("strengthened %s" % args.memory_id if ok else "unknown memory %s" % args.memory_id)
+    return 0 if ok else 1
+
+
+def _cmd_retire(engine: MyelinatedMemory, args) -> int:
+    ok = engine.retire(args.memory_id)
+    engine.save()
+    print("retired %s" % args.memory_id if ok else "unknown memory %s" % args.memory_id)
+    return 0 if ok else 1
+
+
+def _cmd_pin(engine: MyelinatedMemory, args) -> int:
+    ok = engine.pin(args.memory_id)
+    engine.save()
+    print("pinned %s" % args.memory_id if ok else "unknown memory %s" % args.memory_id)
+    return 0 if ok else 1
+
+
+def _cmd_recall(engine: MyelinatedMemory, args) -> int:
+    result = engine.recall(budget=args.budget, query=args.query,
+                           force_similarity=args.force_similarity)
+    # recall() also saves: a read is a write, because the memories it packed were
+    # strengthened by being used.
+    engine.save()
+    print(result.text)
+    return 0
+
+
+def _cmd_refresh(engine: MyelinatedMemory, args) -> int:
+    report = engine.refresh(max_entries=args.max_entries)
+    engine.save()
+    print(json.dumps(report, sort_keys=True))
+    return 0
+
+
+def _cmd_list(engine: MyelinatedMemory, args) -> int:
+    # Derived strength, not the stored score: ``score`` is only the value as of
+    # ``score_at`` (D1), so printing it showed pre-decay numbers that recall
+    # would never have produced.
+    now = engine.clock()
+    for mem in engine.ordered():
+        print("%s\t%.4f\t%s%s\t%s" % (mem.id, engine.strength(mem, now), mem.tier,
+                                      " retired" if mem.retired else "", mem.summary))
+    return 0
+
+
+def _cmd_stats(engine: MyelinatedMemory, args) -> int:
+    print(json.dumps(engine.stats(), indent=2, sort_keys=True))
+    return 0
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -1177,66 +1316,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         engine = MyelinatedMemory(path=args.store, **kwargs)
     except ValueError as exc:
-        # Corrupt or future-schema store: a clean message and exit 2, never a
-        # traceback on the terminal that asked for a one-liner.
+        # Corrupt, wrong-shaped or future-schema store: a clean message and exit 2,
+        # never a traceback on the terminal that asked for a one-liner.
         print("error: %s" % exc, file=sys.stderr)
         return 2
-
-    if args.command == "add":
-        memory_id = engine.add(
-            args.content, category=args.category, protected=args.protected,
-            memory_id=args.memory_id, supersedes=args.supersedes,
-        )
-        engine.save()
-        print(memory_id)
-        return 0
-
-    if args.command == "access":
-        ok = engine.access(args.memory_id)
-        engine.save()
-        print("strengthened %s" % args.memory_id if ok else "unknown memory %s" % args.memory_id)
-        return 0 if ok else 1
-
-    if args.command == "retire":
-        ok = engine.retire(args.memory_id)
-        engine.save()
-        print("retired %s" % args.memory_id if ok else "unknown memory %s" % args.memory_id)
-        return 0 if ok else 1
-
-    if args.command == "pin":
-        ok = engine.pin(args.memory_id)
-        engine.save()
-        print("pinned %s" % args.memory_id if ok else "unknown memory %s" % args.memory_id)
-        return 0 if ok else 1
-
-    if args.command == "recall":
-        result = engine.recall(budget=args.budget, query=args.query,
-                               force_similarity=args.force_similarity)
-        engine.save()
-        print(result.text)
-        return 0
-
-    if args.command == "refresh":
-        report = engine.refresh(max_entries=args.max_entries)
-        engine.save()
-        print(json.dumps(report, sort_keys=True))
-        return 0
-
-    if args.command == "list":
-        # Derived strength, not the stored score: ``score`` is only the value as of
-        # ``score_at`` (D1), so printing it showed pre-decay numbers that recall
-        # would never have produced.
-        now = engine.clock()
-        for mem in engine.ordered():
-            print("%s\t%.4f\t%s%s\t%s" % (mem.id, engine.strength(mem, now), mem.tier,
-                                          " retired" if mem.retired else "", mem.summary))
-        return 0
-
-    if args.command == "stats":
-        print(json.dumps(engine.stats(), indent=2, sort_keys=True))
-        return 0
-
-    return 2
+    # Every subcommand binds its own handler in the parser, so a command that
+    # appears in --help always has something behind it: a phantom init/save/load
+    # once shipped with no handler, and reached users as a bare exit 2.
+    return args.handler(engine, args)
 
 
 if __name__ == "__main__":

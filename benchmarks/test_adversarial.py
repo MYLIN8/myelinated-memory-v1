@@ -119,6 +119,28 @@ def store_fixtures():
         clean = True
     check(clean, "load: a corrupt store raises ValueError, not a raw decode crash")
 
+    # D21, found by this round's council review: valid JSON of the wrong shape.
+    # The top level was validated; the ``memories`` container and its entries were
+    # not, so these reached ``raw.items()`` / ``Memory(**known)`` uncaught.
+    for index, payload in enumerate(({"schema": myelinate.SCHEMA_VERSION, "memories": "abc"},
+                                     {"schema": myelinate.SCHEMA_VERSION, "memories": {}},
+                                     {"schema": myelinate.SCHEMA_VERSION, "memories": [1, 2]},
+                                     {"schema": myelinate.SCHEMA_VERSION,
+                                      "memories": [{"id": "x"}]},
+                                     {"schema": myelinate.SCHEMA_VERSION,
+                                      "memories": [{"content": "no id"}]})):
+        wrong_path = os.path.join(tmp, "wrong-%d.json" % index)
+        with open(wrong_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+        try:
+            myelinate.MyelinatedMemory(path=wrong_path)
+            shape_clean = False
+        except ValueError:
+            shape_clean = True
+        except Exception:
+            shape_clean = False
+        check(shape_clean, "D21: wrong-shape store refused with ValueError: %s" % (payload,))
+
     # Retire-then-restate must not recycle the retired entry's id (D13 family).
     e = myelinate.MyelinatedMemory(in_memory=True)
     old = e.add("the deploy target is the staging cluster")
@@ -211,6 +233,26 @@ def recall_fixtures():
     normal = engine.recall(query="deploy target", budget=2200, now=10.0)
     check(normal.similarity_used is False, "S6: the engine default is not mutated by the override")
 
+    # Q3: the scale path. The benchmark's 10,000-memory probe is not a check, so the
+    # budget invariant and determinism were only asserted at n <= 80 - below the
+    # point where RECALL_POOL and the candidate ceilings actually bind.
+    big = myelinate.MyelinatedMemory(in_memory=True)
+    rng_big = random.Random(99)
+    words = ("deploy", "target", "lunch", "retention", "window", "audit", "policy",
+             "concise", "reply", "staging", "cluster", "budget")
+    for i in range(2000):
+        text = " ".join(rng_big.choice(words) for _ in range(12)) + " note %d" % i
+        big.add(text, now=float(i % 30))
+    check(big.size() == 2000, "scale: the store holds every memory it was given")
+    for budget in (0, 1, 512, 2200):
+        scaled = big.recall(budget=budget, query="deploy target", now=100.0)
+        check(scaled.chars <= budget,
+              "scale: budget %d is respected on a 2000-memory store (%d)" % (budget, scaled.chars))
+    first_big = big.recall(budget=2200, query="deploy target", now=100.0)
+    second_big = big.recall(budget=2200, query="deploy target", now=100.0)
+    check(first_big.text == second_big.text and first_big.used_ids == second_big.used_ids,
+          "scale: recall is deterministic at 2000 memories")
+
 
 # ============================================== chair 4: protocol robustness
 def protocol_fixtures():
@@ -269,6 +311,27 @@ def protocol_fixtures():
     result = cli("--store", bad_store, "stats")
     check(result.returncode != 0 and "Traceback" not in result.stderr,
           "CLI: a corrupt store is a clean error, not a traceback")
+
+    # D21: the same contract for a wrong-shaped store, and the empty-store path.
+    for index, payload in enumerate(({"schema": myelinate.SCHEMA_VERSION, "memories": "abc"},
+                                     {"schema": myelinate.SCHEMA_VERSION, "memories": [1, 2]},
+                                     {"schema": myelinate.SCHEMA_VERSION,
+                                      "memories": [{"id": "x"}]})):
+        shaped = os.path.join(tempfile.gettempdir(), "adv-shaped-%d.json" % index)
+        with open(shaped, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+        result = cli("--store", shaped, "stats")
+        check(result.returncode == 2 and "Traceback" not in result.stderr
+              and result.stderr.startswith("error:"),
+              "D21: a wrong-shape store is a clean error and exit 2 (exit %d)"
+              % result.returncode)
+
+    empty = os.path.join(tempfile.gettempdir(), "adv-empty-store.json")
+    if os.path.exists(empty):
+        os.remove(empty)
+    result = cli("--store", empty, "stats")
+    check(result.returncode == 0 and "Traceback" not in result.stderr,
+          "CLI: an empty store is a fresh engine, not an error")
 
 
 def main():

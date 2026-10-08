@@ -5,8 +5,8 @@
 [![License: Source-Available](https://img.shields.io/badge/license-Source--Available-red.svg)](LICENSE.md)
 [![Python 3.10 | 3.11](https://img.shields.io/badge/python-3.10%20%7C%203.11-3776ab.svg)](CONTRIBUTING.md)
 [![Zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](SECURITY.md)
-[![Checks](https://img.shields.io/badge/checks-10%20offline%20suites%20%7C%20181%20engine%20%7C%20204%20harness%20%7C%2088%20adversarial%20%7C%2071%20judge-brightgreen.svg)](#4-how-it-is-tested)
-[![CI](https://github.com/TWS07-gif/myelinated-memory/actions/workflows/checks.yml/badge.svg)](https://github.com/TWS07-gif/myelinated-memory/actions/workflows/checks.yml)
+[![Checks](https://img.shields.io/badge/checks-10%20offline%20suites%20%7C%20209%20engine%20%7C%20204%20harness%20%7C%20103%20adversarial%20%7C%2071%20judge-brightgreen.svg)](#4-how-it-is-tested)
+[![CI](https://github.com/MYLIN8/myelinated-memory-v1/actions/workflows/checks.yml/badge.svg)](https://github.com/MYLIN8/myelinated-memory-v1/actions/workflows/checks.yml)
 [![Benchmark](https://img.shields.io/badge/benchmark-results-orange.svg)](benchmarks/RESULTS.md)
 
 ![The session-boundary pass and the recall ladder](docs/assets/hero.svg)
@@ -40,7 +40,7 @@ It is a single Python file with **zero dependencies** — no vector database, no
 ```bash
 python3 scripts/myelinate.py add --content "User prefers concise replies." --category preference
 python3 scripts/myelinate.py recall --query "What does the user prefer?" --budget 2200
-python3 benchmarks/test_engine.py                    # engine ok: 181 checks
+python3 benchmarks/test_engine.py                    # engine ok: 209 checks
 ```
 
 All ten check suites are offline, free and run in seconds ([§4](#4-how-it-is-tested)); the full session protocol is [§7](#7-quick-start).
@@ -335,11 +335,11 @@ The round-3 plan is [`docs/PLAN.md`](docs/PLAN.md). It starts by repairing the *
 
 ## 4. How it is tested
 
-**Until this review the engine had no automated checks at all** — while holding every real defect this project has found: compounding decay, the similarity index that `retire()` leaves stale, double tokenisation on `add()`, and a clustering pass on the refresh hot path whose output nothing reads. `scripts/myelinate.py` ended at `sys.exit(main())`, so the decay bug was measured, tabulated and explained across two rounds of reports before anyone read the formula. That gap is now closed. **What exists today** is the engine's own suite (181 checks), the harness's own suite (204 checks, `test_harness.py`), 71 judge assertions and the harness self-checks:
+**Until this review the engine had no automated checks at all** — while holding every real defect this project has found: compounding decay, the similarity index that `retire()` leaves stale, double tokenisation on `add()`, and a clustering pass on the refresh hot path whose output nothing reads. `scripts/myelinate.py` ended at `sys.exit(main())`, so the decay bug was measured, tabulated and explained across two rounds of reports before anyone read the formula. That gap is now closed. **What exists today** is the engine's own suite (209 checks), the harness's own suite (204 checks, `test_harness.py`), 71 judge assertions and the harness self-checks:
 
 | Check | Command | What it verifies |
 | :--- | :--- | :--- |
-| **Engine** | `python3 benchmarks/test_engine.py` | 181 checks on the engine itself: per-day decay for 1–30 days with a no-op re-realise, boost from a decayed value, the update-versus-restatement path, a correction after a retire, tier thresholds, rendering caps (including that the archived tier is readable rather than a bare id stub), the budget never exceeded on both recall paths for budgets 0/50/500/2200, retired memories excluded, index invalidation on `retire`/`pin` compared against a full rebuild, pinning a retired memory, `prune_deficit`, duplicate collapsing, persistence round-trip, the version-2 store migration, store-path precedence, and the CLI wiring (`--force-similarity`/`--no-similarity` reach `recall()`, unknown subcommands are rejected) |
+| **Engine** | `python3 benchmarks/test_engine.py` | 209 checks on the engine itself: per-day decay for 1–30 days with a no-op re-realise, boost from a decayed value, the update-versus-restatement path, a correction after a retire, tier thresholds, rendering caps (including that the archived tier is readable rather than a bare id stub), the budget never exceeded on both recall paths for budgets 0/50/500/2200, retired memories excluded, index invalidation on `retire`/`pin` compared against a full rebuild, pinning a retired memory, `prune_deficit`, duplicate collapsing, persistence round-trip, the version-2 store migration, store-path precedence, and the CLI wiring (`--force-similarity`/`--no-similarity` reach `recall()`, unknown subcommands are rejected), that a store that is valid JSON of the wrong shape is a clean `error:` and exit 2 rather than a traceback, that an absent store is a fresh engine rather than an error, that unicode survives the store byte-for-byte, that the engine and the harness share one stopword list, and that the advertised version matches the changelog |
 | Statistics | `python3 benchmarks/stats.py` | Wilcoxon (identical → p 1.0; a clear shift → p<0.05), Cliff's δ sign, bootstrap CI contains the mean and is seed-deterministic, Holm correction, `format_p`, percentiles |
 | Scenario fixtures | `python3 benchmarks/synthetic.py` | unique ids, event ordering, evidence and stale ids exist and precede their query, the staleness suites retire (or provably do not retire) their stale ids, filler > 200 so the budget binds, stale/evidence Jaccard < 0.9 so collapsing cannot masquerade as staleness handling, and **globally unique query ids** — a collision would silently merge two questions in the paired statistics |
 | Judge semantics | `python3 benchmarks/judge.py` | the deterministic oracle extracts a line, grades both `contains` and `exact`, and refuses the LLM label |
@@ -347,14 +347,14 @@ The round-3 plan is [`docs/PLAN.md`](docs/PLAN.md). It starts by repairing the *
 | Stub protocol | `python3 benchmarks/stub_llm.py` | the stub's request→response mapping, including the forced-failure path |
 | MCP server | `python3 scripts/myelinated_mcp.py --selftest` | the stdio JSON-RPC framing and all seven memory tools, in-process against a throwaway store — **no MCP client needed** |
 | Harness fixtures | `python3 benchmarks/test_harness.py` | 204 checks pinning what measured everything except itself: the metric definitions to hand-computed values, the pre-registered verdict against fixture inputs (NOT MEASURED over phantom FAIL, informational rows out of the denominator, BOTH flat baselines), replay determinism, the budget invariant across every offline arm, the LoCoMo conversion, the report renderer, and the D15 output-path guards |
-| Adversarial | `python3 benchmarks/test_adversarial.py` | 88 checks from the myelination council's code-and-architecture review, four chairs: store/persistence (schema-version refusal, corrupt stores, load-replaces-not-merges, save atomicity, retire-then-restate ids), the algebra of decay (the decay semigroup fuzzed over refresh schedules, realize idempotence, dead memories never strengthened), the recall/budget contract (hard ceiling fuzzed over unicode stores at six budgets, determinism, `--pure --force-similarity`), and protocol robustness (the MCP server survives hostile JSON-RPC and keeps serving; the CLI fails cleanly) |
+| Adversarial | `python3 benchmarks/test_adversarial.py` | 103 checks from the myelination council's code-and-architecture review, four chairs: store/persistence (schema-version refusal, corrupt stores, load-replaces-not-merges, save atomicity, retire-then-restate ids), the algebra of decay (the decay semigroup fuzzed over refresh schedules, realize idempotence, dead memories never strengthened), the recall/budget contract (hard ceiling fuzzed over unicode stores at six budgets, determinism, `--pure --force-similarity`), and protocol robustness (the MCP server survives hostile JSON-RPC and keeps serving; the CLI fails cleanly on a corrupt store, a wrong-shaped store and an absent one), plus the budget invariant and determinism at 2,000 memories, where the recall pool and the candidate ceilings actually bind (the 10,000-memory probe is a measurement, not a check) |
 | Arm registry | `python3 benchmarks/engines.py` | 16 offline arms are built and timed, including the three allocator controls, round 5's `M11`/`M12` and R12's `M13`; the dense arm's batched embedding transport is checked offline against a stub embedder |
 | CI | [`.github/workflows/checks.yml`](.github/workflows/checks.yml) | every suite above plus `py_compile`, on Python 3.10 and 3.11, no network and no secrets |
 
 **The engine has its own suite**, committed and executed — [`benchmarks/test_engine.py`](benchmarks/test_engine.py), covering the score, decay, the update path, the tier thresholds, the rendering caps, the budget guarantee on both recall paths, retired-memory exclusion, index invalidation, pinning, duplicate collapsing, persistence and store-path precedence:
 
 ```bash
-python3 benchmarks/test_engine.py    # engine ok: 181 checks
+python3 benchmarks/test_engine.py    # engine ok: 209 checks
 ```
 
 It uses a **known-defect registry**: behaviour that is wrong but tracked is registered with its defect id and reported as `KNOWN DEFECT <id> ...` instead of failing, so the suite stays green across a fix and a tracked defect cannot be quietly forgotten. **The registry is empty today** — a run prints no `KNOWN DEFECT` line at all, because the four it used to carry (the compounding decay W0.1, the similarity index `retire()` left stale W0.7, and the two lost-update defects D13 and D14) are now **real assertions** that fail if the behaviour regresses. The mechanism stays in the file, documented, so a newly found defect goes back in with `known_defect(...)` rather than being silently ignored.
@@ -552,7 +552,7 @@ Scenarios come from four tiers: a curated suite, a seeded synthetic generator, t
 | `scripts/myelinated_mcp.py` | the same engine behind a stdio MCP server (zero dependencies) with `--selftest` |
 | `benchmarks/chart.py` | one command that turns `results/raw.json` into the cost-vs-hit-rate chart and table |
 | `benchmarks/test_harness.py` | the harness's own suite: 204 checks pinning the metrics, the verdict, replay determinism, the budget invariant, the LoCoMo conversion, the renderer and the D15 guards |
-| `benchmarks/test_adversarial.py` | the myelination council's adversarial suite: 88 checks over the store, the decay algebra, the recall/budget contract and both protocols |
+| `benchmarks/test_adversarial.py` | the myelination council's adversarial suite: 103 checks over the store, the decay algebra, the recall/budget contract and both protocols |
 | `benchmarks/pool_probe.py` | the R11 diagnostic: `candidate_pool(query)` at query time, to split candidate generation from ordering |
 | `SKILL.md` | the agent-facing skill: the session protocol (`refresh` → `recall` → `access` → `add`) |
 | `benchmarks/run_bench.py` | the runner: replays every scenario against every arm, judges in-timeline, writes the report |
@@ -560,7 +560,7 @@ Scenarios come from four tiers: a curated suite, a seeded synthetic generator, t
 | `benchmarks/common.py` | the frozen contracts: `Scenario`/`Event`/`Query`, the replay loop, budget packing |
 | `benchmarks/metrics.py` | hit rate, MRR, nDCG@10, evidence precision, `stale_leak`, chars-per-hit |
 | `benchmarks/stats.py` | paired statistics: Wilcoxon signed-rank (exact below n=21), bootstrap CI, Cliff's δ, Holm correction |
-| `benchmarks/test_engine.py` | the engine's regression suite: 181 checks plus a known-defect registry (empty today) |
+| `benchmarks/test_engine.py` | the engine's regression suite: 209 checks plus a known-defect registry (empty today) |
 | `benchmarks/tune_probe.py` | the constant-sweep harness (never writes the report) |
 | `benchmarks/synthetic.py` | the seeded generators, the curated-free synthetic tiers, and the two staleness suites (built from one builder so they cannot drift) |
 | `benchmarks/scenarios.py` | the hand-written curated scenarios and their ground truth |
@@ -610,6 +610,7 @@ Scenarios come from four tiers: a curated suite, a seeded synthetic generator, t
 - [Fix plan](docs/FIX-PLAN.md) — the ordered bug-fix list, the six defects found by the offline self-test pass, and what an API key would unblock
 - [Round 4 design](docs/ROUND4-DESIGN.md) — the two root causes behind the eighteen defects, and the unified mechanism that replaces them
 - [Round 5 strategy](docs/ROUND5-STRATEGY.md) — what the deficit actually was, the criterion the shipped arm passes, and what is still open
+- [Round 6 plan](docs/ROUND6-PLAN.md) — the council's review: the verified baseline, every finding with the command behind it, five gates with their acceptance criteria, and the decisions still open
 - [Testing and tuning review](docs/TESTING.md) — what is verified, what is not, and the sweep list
 - [Remediation log](docs/REMEDIATION.md) — what each round changed, including the losses
 - [Changelog](CHANGELOG.md) — the same history in release form

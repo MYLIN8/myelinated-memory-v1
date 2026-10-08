@@ -17,6 +17,77 @@ then regenerated it from the round-5 code, so the committed report and the
 figures quoted under [5.1.0] are the same run, and 5.0.0's table stands as the
 hold-out confirmation of it.
 
+## [5.2.2] - 2026-10-08
+
+The council-review round: one shipped correctness defect closed, the MCP handshake brought back in
+line with the release, the engine's write path and candidate generation de-duplicated, and the four
+gaps the review found in the suites filled. The store schema and the shipped engine configuration are
+unchanged and no published number moves, so this is a patch. The review's full findings and what it
+left open are in `docs/ROUND6-PLAN.md`.
+
+### Fixed
+
+- **D21 - a store that was valid JSON of the wrong shape crashed the CLI with a traceback.**
+  `load()` validated the store's top level and its schema version, but neither the `memories`
+  container nor its entries: `{"memories": "abc"}` reached `raw.items()` (`AttributeError`) and
+  `{"memories": [{"id": "x"}]}` reached `Memory(**known)` (`TypeError`), both escaping `main()`'s
+  `except ValueError` as a traceback and exit 1. That is the opposite of the clean `error: …` line and
+  exit 2 that `SECURITY.md` and [5.2.0] promise for a corrupt store; S3's "rejects non-object stores"
+  had covered only the top level. Every shape error is now a `ValueError` naming the offending index,
+  and `load()` parses and validates the whole file before touching live state, so a refused load can
+  no longer leave the engine half-populated. The user-visible contract (exit 2, no traceback) is
+  pinned at the CLI in `test_adversarial.py` and at the engine boundary in `test_engine.py`.
+- **The MCP server advertised the wrong version.** `SERVER_INFO["version"]` was the literal `"5.1.0"`
+  while the project shipped 5.2.1, so every MCP client completing the handshake was told a version the
+  engine is not. The number now lives once, in `myelinate.__version__`; the server reads it, and a
+  check pins both to the newest heading in this file, so the three can no longer drift apart.
+
+### Changed
+
+- **Behaviour-preserving refactors in `scripts/myelinate.py`.** No number moves and no public or CLI
+  surface is renamed; `test_engine.py`'s existing 181 checks stayed green through every step:
+  - **One candidate-generation algorithm.** `_candidates` and `_cluster` carried two copies of the
+    same rarest-first postings scan with different ceilings; both now call `_rank_by_shared_keys`.
+  - **`add()` split by outcome.** The restatement branch became `_collapse_into`, the insert branch
+    `_insert_new`, so the write path reads as the distinct outcomes it implements.
+  - **Sketch names that say which is which.** `_sketch_of`/`_sketch_for` became
+    `_sketch_for_memory`/`_sketch_for_content`, and the two caches are now `_sketch_cache`
+    (per-memory sketches) and `_sketch_index` (LSH band → memory ids).
+  - **One handler per subcommand.** `main()`'s `if args.command == …` chain became eight `_cmd_*`
+    handlers bound by the parser itself, so a subcommand that appears in `--help` always has
+    something behind it.
+
+### Added
+
+- **`docs/ROUND6-PLAN.md`** - the council's review: verified baseline, every finding with the command
+  that produced it, five gates with objective acceptance criteria, and the five decisions that need
+  the maintainer.
+- **Five checks the review showed were missing.** `test_engine.py` reports **209 checks** and
+  `test_adversarial.py` **103**:
+  - a wrong-shape store raises `ValueError` at the engine and exits 2 with a clean message at the
+    CLI, and a refused load leaves the previous store intact (D21);
+  - the empty-store path the quick start opens with: `stats`/`list` must exit 0 and must not create
+    the store, `recall`/`refresh` must exit 0 and stay quiet;
+  - unicode survives `save()`/`load()` byte-for-byte and the file is valid UTF-8 (the recall suite
+    fuzzed unicode stores, but nothing checked a unicode round trip through a file);
+  - the budget invariant and determinism at 2,000 memories, where `RECALL_POOL` and the candidate
+    ceilings bind - previously asserted only at n ≤ 80, while the 10,000-memory probe is a
+    measurement rather than a check;
+  - the engine and harness stopword lists are asserted identical, and `myelinate.__version__` is
+    pinned to the newest changelog entry.
+
+### Not yet established
+
+- **Concurrent writers remain undefined.** `save()` is atomic but unlocked and does no
+  read-modify-write detection, so a second writer silently discards the first's memory. Whether to
+  refuse the second writer or document last-write-wins is a product decision, recorded as an open
+  question in `docs/ROUND6-PLAN.md` §4 rather than guessed at here.
+- **The committed report still predates the 16th arm.** `benchmarks/RESULTS.md` carries the 15 arms
+  `M0`-`M12`; `M13` and the `staleness (update)` tier appear when the report is regenerated, which
+  needs the public LoCoMo cache and a full two-phase run.
+- The five-seed pooled protocol (F22), a complete model-judged run and R12's mechanism separation
+  stay open exactly as recorded under [5.2.1].
+
 ## [5.2.1] - 2026-10-08
 
 A documentation, licensing and reproducibility repair. No engine behaviour changes: the store

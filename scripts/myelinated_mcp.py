@@ -31,10 +31,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-from myelinate import MyelinatedMemory  # noqa: E402
+from myelinate import MyelinatedMemory, __version__  # noqa: E402
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "myelinated-memory", "version": "5.1.0"}
+# Versioned from the engine's single source of truth, so a release cannot leave
+# the MCP handshake advertising a version the engine does not.
+SERVER_INFO = {"name": "myelinated-memory", "version": __version__}
 
 # One JSON Schema per tool. Kept flat and honest: every field the engine
 # actually reads is here, and nothing more.

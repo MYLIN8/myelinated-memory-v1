@@ -392,8 +392,8 @@ def test_zero_means_unbounded_for_the_candidate_ceilings() -> None:
     probe = "Zephyrino retention window about kestrel policy"
     capped = build()
     unbounded = build(max_candidates=0, max_postings_scan=0)
-    capped_ids = capped._candidates(capped._sketch_for(probe))
-    unbounded_ids = unbounded._candidates(unbounded._sketch_for(probe))
+    capped_ids = capped._candidates(capped._sketch_for_content(probe))
+    unbounded_ids = unbounded._candidates(unbounded._sketch_for_content(probe))
     ok(len(capped_ids) <= MAX_CANDIDATES, "the default candidate ceiling still holds")
     ok(len(unbounded_ids) > MAX_CANDIDATES,
        "max_candidates=0 must lift the %d-candidate ceiling" % MAX_CANDIDATES)
@@ -510,6 +510,22 @@ def test_persistence_round_trip() -> None:
         ok(engine.to_dict()["schema"] == reloaded.to_dict()["schema"], "the schema is written")
         ok(reloaded.to_dict()["schema"] == 3, "the schema version is the current one")
 
+        # Unicode must survive save()/load() byte-for-byte. The store is written and
+        # read as UTF-8, and a store that loads is still wrong if it re-encodes what
+        # it read: the recall suite fuzzes unicode stores, but nothing checked that
+        # unicode came back out of a file the way it went in.
+        text = "用户偏好简洁回复 🧠 — no trailing space"
+        unicode_id = engine.add(text, now=T0)
+        engine.save()
+        with open(path, "rb") as handle:
+            stored_bytes = handle.read()
+        stored_bytes.decode("utf-8")  # raises if the file is not valid UTF-8
+        unicode_engine = MyelinatedMemory(path=path)
+        ok(unicode_engine.get(unicode_id).content == text,
+           "unicode content must survive save()/load() byte-for-byte")
+        ok(unicode_engine.get(unicode_id).summary != "",
+           "a unicode memory must keep a non-empty summary")
+
         # A v2 store has no `score_at`; it must migrate to a real decay baseline
         # rather than decaying from the epoch (decay from 0 would archive it).
         payload = engine.to_dict()
@@ -536,6 +552,141 @@ def test_store_path_precedence() -> None:
             os.environ.pop("HERMES_MEMORY_STORE", None)
         else:
             os.environ["HERMES_MEMORY_STORE"] = previous
+
+
+def test_load_rejects_a_wrong_shape_store() -> None:
+    """A store that is valid JSON of the wrong shape must be a clean ValueError.
+
+    D21: ``load()`` validated the store's top level but neither the ``memories``
+    container nor its entries, so ``{"memories": "abc"}`` reached ``raw.items()``
+    and ``{"memories": [{"id": "x"}]}`` reached ``Memory(**known)`` uncaught. The
+    CLI turned both into a traceback and exit 1, the opposite of the clean
+    ``error: ...`` and exit 2 that SECURITY.md promises for a corrupt store. Every
+    shape error is asserted here, at the engine boundary the CLI wraps.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        wrong_shapes = [
+            {"schema": 3, "memories": "abc"},
+            {"schema": 3, "memories": {}},
+            {"schema": 3, "memories": [1, 2]},
+            {"schema": 3, "memories": [{"id": "x"}]},
+            {"schema": 3, "memories": [{"content": "no id"}]},
+        ]
+        for index, payload in enumerate(wrong_shapes):
+            path = os.path.join(tmp, "wrong-%d.json" % index)
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+            raised: Optional[BaseException] = None
+            try:
+                MyelinatedMemory(path=path)
+            except BaseException as exc:  # noqa: BLE001 - the assertion is the type
+                raised = exc
+            ok(isinstance(raised, ValueError),
+               "a wrong-shape store must raise ValueError, not %s: %s"
+               % (type(raised).__name__, payload))
+            ok("malformed" in str(raised),
+               "the message must say what is malformed: %s" % raised)
+
+        # A refused load must not leave the engine half-loaded.
+        path = os.path.join(tmp, "half.json")
+        engine = MyelinatedMemory(path=path)
+        engine.add("a good fact about retention windows", now=T0)
+        engine.save()
+        payload = engine.to_dict()
+        payload["memories"].append({"id": "broken"})
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+        try:
+            engine.load()
+            ok(False, "load() must refuse a store with a malformed entry")
+        except ValueError:
+            pass
+        ok(len(engine.memories) == 1,
+           "a refused load() must leave the previously loaded store intact")
+
+        # An absent store is not an error: a fresh engine with nothing to read.
+        absent = MyelinatedMemory(path=os.path.join(tmp, "absent.json"))
+        ok(absent.load() == 0, "an absent store loads zero memories")
+        ok(absent.stats()["total"] == 0, "an absent store has an empty tier table")
+        ok(absent.recall(budget=2200).chars == 0, "an absent store recalls nothing")
+
+
+def test_the_cli_is_clean_on_an_empty_store() -> None:
+    """An absent store is a fresh engine, not an error, and never a traceback.
+
+    The quick start opens with ``refresh`` on a machine that has never run the
+    engine, so the empty-store path is the first thing a new user exercises - and
+    it was unasserted (only the candidate pool's emptiness was checked).
+    """
+    import contextlib
+    import io
+
+    import myelinate
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = os.path.join(tmp, "never-written.json")
+
+        # The read-only commands must neither fail nor create the store.
+        for command in ("stats", "list"):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = myelinate.main(["--store", store, command])
+            ok(rc == 0, "%s on an empty store must exit 0 (got %d)" % (command, rc))
+            ok("Traceback" not in err.getvalue(),
+               "%s on an empty store must not trace back: %s" % (command, err.getvalue()))
+        ok(not os.path.exists(store), "a read-only command must not create the store")
+
+        # The commands that legitimately write must still exit 0 and stay quiet.
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = myelinate.main(["--store", store, "recall", "--budget", "64"])
+        ok(rc == 0 and out.getvalue().strip() == "",
+           "recall on an empty store prints nothing and exits 0")
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = myelinate.main(["--store", store, "refresh"])
+        ok(rc == 0, "refresh on an empty store exits 0")
+
+
+def test_the_engine_and_harness_share_one_stopword_list() -> None:
+    """INDEX_STOPWORDS and common.STOPWORDS must stay identical.
+
+    The engine deliberately does not import the harness (the harness imports the
+    engine), so the same word list is spelled out in both files. Nothing tested
+    that the copies agreed, which is how a duplicated constant drifts: a word
+    dropped on one side would change tokenisation for that side only, and every
+    measured number would then compare two different engines.
+    """
+    import common
+    import myelinate
+
+    ok(myelinate.INDEX_STOPWORDS == common.STOPWORDS,
+       "the engine and harness stopword lists must be identical")
+    ok(len(myelinate.INDEX_STOPWORDS) > 0, "the stopword list must not be empty")
+
+
+def test_the_advertised_version_matches_the_changelog() -> None:
+    """The engine version, the MCP handshake and the newest changelog entry agree.
+
+    The MCP server advertised "5.1.0" for a whole round while the project shipped
+    5.2.1, because the version was a literal in the server file and nothing compared
+    it to anything. The engine now owns the number; this pins the other two to it,
+    so a release that forgets one of the three is a red suite rather than a stale
+    handshake.
+    """
+    import re
+
+    import myelinate
+    import myelinated_mcp
+
+    with open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8") as handle:
+        changelog = handle.read()
+    headings = re.findall(r"^## \[(\d+\.\d+\.\d+)\]", changelog, flags=re.MULTILINE)
+    ok(bool(headings), "the changelog must carry at least one released version heading")
+    ok(myelinate.__version__ == headings[0],
+       "the engine version must be the newest changelog entry (%s vs %s)"
+       % (myelinate.__version__, headings[0]))
+    ok(myelinated_mcp.SERVER_INFO["version"] == myelinate.__version__,
+       "the MCP handshake must advertise the engine's version")
 
 
 def test_round_five_pins_the_legacy_arms() -> None:

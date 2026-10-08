@@ -19,7 +19,17 @@ below is traceable to `benchmarks/RESULTS.md` (committed report, seed 0), the ro
 `ai-agents` · `memory` · `context-management` · `retrieval` · `llm` · `agent-memory` ·
 `benchmark` · `python` · `stdlib-only` · `mcp` · `rag` · `hebbian-learning`
 
-## 3. Release notes draft — v5.2.0 (released 2026-10-08)
+## 3. Release notes draft — v5.2.2 (released 2026-10-08)
+
+The canonical record is the `[5.2.2]` entry in [`CHANGELOG.md`](../CHANGELOG.md). In short: **D21**,
+where a store that was valid JSON of the wrong shape crashed the CLI with a traceback instead of the
+clean `error:` and exit 2 `SECURITY.md` promises; the MCP handshake brought back in line with the
+release (`__version__` is now the single source and a check pins it to the changelog); four
+behaviour-preserving refactors in the engine; and the checks the council review found missing
+(`test_engine.py` **209**, `test_adversarial.py` **103**). The store schema, the shipped engine
+configuration and every published number are unchanged.
+
+## 3.1 Release notes draft — v5.2.0 (released 2026-10-08)
 
 The canonical record is now the `[5.2.0]` entry in [`CHANGELOG.md`](../CHANGELOG.md) (which also
 covers R11, R12, the harness fixtures and the F23 resolution); use that entry when drafting the
@@ -115,4 +125,4 @@ kept, hold-out seeds, and the scoped-run provenance rules. End with the two open
 | LoCoMo, dense arm closes the tier | 0.833 vs 0.683 / 0.717 | R10 scoped run, seed 0 |
 | Supersession leak with signal / without | 0.000 / 1.000 | committed report |
 | Decision rule | 4 of 6 scored criteria pass | committed report |
-| Checks | 181 engine checks, 204 harness checks, 88 adversarial checks, 71 judge assertions, 10 offline suites | this tree |
+| Checks | 209 engine checks, 204 harness checks, 103 adversarial checks, 71 judge assertions, 10 offline suites | this tree |

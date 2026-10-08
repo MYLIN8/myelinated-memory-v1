@@ -79,4 +79,8 @@ The engine targets Python 3.10 and 3.11 and has no dependencies to keep patched.
 
 ## License
 
-MIT — see [LICENSE.md](LICENSE.md).
+**Source-available, not open source.** The complete and only terms are in [LICENSE](LICENSE) —
+the *Myelinated Memory Source-Available Licence 1.0* (© 2026 Thomas Sturgeon). Personal,
+educational, research and evaluation use is permitted; commercial use, redistribution, hosting
+and publication are restricted. Earlier statements elsewhere in this repository, including the
+`MIT` line that used to stand here, are superseded by that file.

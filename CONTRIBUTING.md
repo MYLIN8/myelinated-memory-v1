@@ -70,3 +70,22 @@ publish a new measurement — a full run, not a scoped one.
 Use the pull-request template. Small, focused PRs are reviewed fastest. If your change affects a
 number in `README.md` or `benchmarks/RESULTS.md`, say which row and paste the command output that
 produced it.
+
+## Licence and contributions
+
+This repository is **source-available, not open source**. [`LICENSE`](LICENSE) — the
+*Myelinated Memory Source-Available Licence 1.0*, © 2026 Thomas Sturgeon — is the only licence
+document in the repository, and it supersedes every earlier statement about licensing.
+
+Because the licence restricts redistribution and modification, a pull request needs an explicit
+inbound grant before it can be merged. By opening a pull request you agree that:
+
+- your contribution may be used, reproduced, modified, published and relicensed by Thomas
+  Sturgeon as part of this project or any other work;
+- the work is yours to submit — no copied GPL/AGPL or otherwise incompatible code, and nothing
+  you do not own;
+- your contribution is submitted under the terms of [`LICENSE`](LICENSE).
+
+If you would rather not grant that, open an issue with the idea, the reproduction and the
+measurement instead: a reproduced result is as useful to this project as a patch, and it raises
+no licensing question.

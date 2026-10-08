@@ -1,0 +1,136 @@
+# Myelinated Memory Source-Available Licence
+
+**Version 1.0 — effective 8 October 2026**
+
+Copyright (c) 2026 Thomas Sturgeon. All rights reserved.
+
+`SPDX-License-Identifier: LicenseRef-Myelinated-Memory-Source-Available-1.0`
+
+This document is the complete, and the only, licence for the software in this
+repository (the "Software"). It supersedes every earlier licence statement made
+in this repository — including the summary previously published as `LICENSE.md`
+and the third-party licence file previously published as
+`POLYFORM-NONCOMMERCIAL.md`. Where any other file in this repository disagrees
+with this document, this document governs.
+
+## 1. Definitions
+
+* **"Licensor"** — Thomas Sturgeon, the copyright holder of the Software.
+* **"Software"** — the source code, documentation, benchmark harness, benchmark
+  data and reports in this repository, and any part of them.
+* **"You"** — the individual or legal entity exercising rights under this
+  licence.
+* **"Non-commercial purpose"** — a purpose that is not primarily intended for or
+  directed toward commercial advantage or monetary compensation. Personal
+  study, private experimentation, education, academic research, evaluation, and
+  use inside a non-commercial organisation are non-commercial purposes.
+* **"Commercial purpose"** — any use intended for or directed toward commercial
+  advantage or monetary compensation. It includes: use in or for a business or
+  a paid service; a product, hosted, managed or software-as-a-service offering
+  that contains, embeds or is derived from the Software; paid consulting,
+  integration or support whose value derives primarily or substantially from
+  the Software; internal business use where the Software is used to deliver the
+  organisation's commercial activity; and any use by or for an organisation
+  whose primary purpose is commercial gain.
+* **"Publish"** — to distribute, sublicense, host, transmit, make available, or
+  otherwise convey the Software, or a modified version of it, to any third
+  party.
+
+## 2. Licence grant
+
+Subject to the Conditions in §3 and the Restrictions in §4, the Licensor grants
+You a worldwide, royalty-free, non-exclusive, non-transferable,
+non-sublicensable licence to:
+
+1. read, view and download the Software;
+2. run the Software;
+3. copy the Software for back-up and for the non-commercial purposes above;
+4. modify the Software, and run Your modified version, privately, for a
+   non-commercial purpose.
+
+No other rights are granted, by implication, estoppel or otherwise. All rights
+not expressly granted are reserved by the Licensor.
+
+## 3. Conditions
+
+1. **Attribution.** Any copy of the Software, or of a substantial part of it,
+   that You keep, share with a permitted party, or use in a publication, must
+   retain this licence text, the copyright notice above, and any attribution
+   notice the Licensor has placed in the Software.
+2. **Academic and research use.** If You use the Software in academic work or in
+   a publication, cite the project and attribute it to Thomas Sturgeon.
+3. **No removal of notices.** You may not remove or obscure the copyright
+   notice, this licence, or the `SPDX-License-Identifier` line.
+4. **Feedback and inbound contributions.** Any issue, bug report, patch or pull
+   request You submit is a contribution. By submitting it You grant the
+   Licensor a perpetual, worldwide, royalty-free, irrevocable licence to use,
+   reproduce, modify, publish and relicense the contribution as part of the
+   Software or any other work, and You confirm that You have the right to grant
+   that. Contributions are not returned and do not change the terms under which
+   the Software is licensed to You. See `CONTRIBUTING.md`.
+
+## 4. Restrictions
+
+You may **not**, without the Licensor's prior written permission:
+
+1. use the Software, or anything derived from it, for a commercial purpose;
+2. publish the Software or a modified version of it, or make it available to
+   third parties — including by hosting it, distributing it, packaging it in a
+   product, publishing a fork or derivative work, or uploading it to a package
+   registry or a model-training corpus;
+3. sublicense, sell, rent, lease or otherwise transfer the Software, or the
+   rights granted to You by this licence;
+4. use the Software on behalf of, or to provide services to, third parties;
+5. use the Licensor's name, the project name "Myelinated Memory", or any
+   associated mark, to endorse or promote anything, or in any way that suggests
+   sponsorship or affiliation.
+
+If You want to use the Software in a way these Restrictions forbid, ask: the
+Licensor may grant a separate commercial or distribution licence in writing.
+
+## 5. Termination
+
+This licence terminates automatically, without notice, if You breach any of the
+Conditions or Restrictions. On termination You must stop using the Software and
+delete every copy You hold. The Licensor may reinstate the licence in writing;
+until then You have no rights under it. §4 (Restrictions), §6 (No warranty), §7
+(Limitation of liability) and §8 (General) survive termination.
+
+## 6. No warranty
+
+The Software is provided "as is", without warranty or condition of any kind,
+express or implied, including any implied warranty of merchantability, fitness
+for a particular purpose, title or non-infringement. The Software is a research
+and hobby project: it may contain defects, it is not fit for production use
+without Your own testing, and no amount of testing or review by the Licensor
+creates a warranty. You use it at Your own risk.
+
+## 7. Limitation of liability
+
+As far as the law allows, the Licensor will not be liable to You for any damages
+arising out of this licence, the Software, or its use or nature, under any kind
+of legal claim — including direct, indirect, incidental, special, consequential
+or punitive damages, and including lost data, lost profit or business
+interruption. This applies even if the Licensor has been told such damage is
+possible.
+
+## 8. General
+
+1. **Severability.** If any provision of this licence is invalid, unenforceable
+   or in conflict with the law, the remaining provisions stay in force.
+2. **No waiver.** A failure to enforce any provision is not a waiver of it.
+3. **No trademark licence.** No right to any name or mark is granted.
+4. **Whole agreement.** This document is the whole licence between You and the
+   Licensor for the Software, and replaces anything said elsewhere in the
+   repository.
+
+## 9. Asking permission
+
+Commercial licensing, redistribution, hosting, and any use the Restrictions
+forbid: open an issue in this repository, or contact the copyright holder
+directly.
+
+---
+
+*This licence was written by the copyright holder for a hobby research project.
+It is not legal advice; if the terms matter to you, have a lawyer review them.*

@@ -19,7 +19,7 @@ below is traceable to `benchmarks/RESULTS.md` (committed report, seed 0), the ro
 `ai-agents` · `memory` · `context-management` · `retrieval` · `llm` · `agent-memory` ·
 `benchmark` · `python` · `stdlib-only` · `mcp` · `rag` · `hebbian-learning`
 
-## 3. Release notes draft — v5.2.0 (unreleased)
+## 3. Release notes draft — v5.2.0 (released 2026-10-08)
 
 The canonical record is now the `[5.2.0]` entry in [`CHANGELOG.md`](../CHANGELOG.md) (which also
 covers R11, R12, the harness fixtures and the F23 resolution); use that entry when drafting the

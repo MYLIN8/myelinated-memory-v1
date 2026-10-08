@@ -79,4 +79,7 @@ The engine targets Python 3.10 and 3.11 and has no dependencies to keep patched.
 
 ## License
 
-MIT — see [LICENSE.md](LICENSE.md).
+Myelinated Memory is **source-available**, not open-source in the unrestricted
+sense: personal, educational, research and evaluation use is permitted with
+attribution, while commercial use, redistribution, hosting and modification are
+restricted. The terms are in [LICENSE.md](LICENSE.md).

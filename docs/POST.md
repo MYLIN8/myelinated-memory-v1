@@ -1,8 +1,7 @@
 <!-- 
-  NOTE: This is a one-shot draft artifact for a public post + community crosspost.
+  NOTE: This is a committed draft artifact for a public post + community crosspost.
   It is intentionally written as a single, honest explainer with a short demo and one chart.
-  If you want, I can turn this into the actual repo `docs/POST.md` / `README` comparison
-  update and the release notes instead of leaving it as a scratch file.
+  Promotional posting is the maintainer's action; nothing here has been published.
 -->
 
 # Myelinated Memory — a compact, budget-aware recall layer for LLM agents
@@ -116,7 +115,7 @@ python3 scripts/myelinate.py recall --query "What does the user prefer?" --budge
 Or use it as a library:
 
 ```python
-from scripts.myelinate import MyelinatedMemory
+from myelinate import MyelinatedMemory
 
 m = MyelinatedMemory(in_memory=True)
 m.add("User prefers concise replies.", category="preference")
@@ -181,7 +180,7 @@ python3 benchmarks/run_bench.py
 Or, for the head-to-head recall-vs-cost view without the full scale run:
 
 ```bash
-python3 benchmarks/run_bench.py --tier curated,synthetic,staleness,locomo --skip-scale
+python3 benchmarks/run_bench.py --tier curated --skip-scale
 ```
 
 The first command regenerates the committed report. The second writes a scoped report under a

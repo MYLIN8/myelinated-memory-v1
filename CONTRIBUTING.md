@@ -31,10 +31,11 @@ python3 scripts/myelinated_mcp.py --selftest   # the MCP server, in-process, no 
 python3 -m py_compile scripts/myelinate.py scripts/myelinated_mcp.py benchmarks/*.py
 ```
 
-`benchmarks/test_engine.py` also prints a small number of `KNOWN DEFECT <id> …` lines. That is the
-**known-defect registry**: behaviour that is wrong but tracked and scheduled prints instead of
-failing, so the suite is green before and after a fix and a tracked defect cannot be forgotten.
-Adding a new `KNOWN DEFECT` line is a legitimate contribution; **a failing assertion is not.**
+`benchmarks/test_engine.py` supports a **known-defect registry**: behaviour that is wrong but
+tracked and scheduled prints as `KNOWN DEFECT <id> …` instead of failing, so the suite is green
+before and after a fix and a tracked defect cannot be forgotten. **The registry is empty today** —
+the defects it used to carry are real assertions now that fail if the behaviour regresses — but
+adding a new `KNOWN DEFECT` line is a legitimate contribution; **a failing assertion is not.**
 [`docs/FIX-PLAN.md`](docs/FIX-PLAN.md) is the list.
 
 Do **not** run `python3 benchmarks/run_bench.py` to "check" a change: it rewrites the committed

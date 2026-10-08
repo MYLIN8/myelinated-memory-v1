@@ -19,6 +19,16 @@ python3 benchmarks/run_bench.py            # 33 scenarios, 206 queries, 2200-cha
 > and re-measures; the table below records what round 2 measured **with those
 > instruments**, and decay figures from rounds 1-2 are superseded by W0.1.
 
+> **Status: this is the frozen round-2 log, kept as a historical record - it is not
+> current.** This file only tracks round 2. Rounds 4 and 5 have since shipped
+> (see [`ROUND4-DESIGN.md`](ROUND4-DESIGN.md) and
+> [`ROUND5-STRATEGY.md`](ROUND5-STRATEGY.md)): the decay arithmetic was repaired,
+> the update-versus-restatement path landed, and `PRIOR_WEIGHT` was measured on a
+> hold-out and shipped at 0.0. For current status and the ordered remaining work
+> use [`FIX-PLAN.md`](FIX-PLAN.md) (its §0 and §0.1 carry the round-4 and round-5
+> status) and [`ROUND5-STRATEGY.md`](ROUND5-STRATEGY.md). The round-2 tables below
+> are preserved unchanged as the record of what that round measured.
+
 ## Round 2 outcome
 
 | Arm (same code, one capability at a time) | Change | Task success | Hit rate | nDCG@10 | Chars/hit |

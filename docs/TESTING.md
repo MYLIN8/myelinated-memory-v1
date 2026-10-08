@@ -44,9 +44,9 @@ changed by the review itself.
 | `scripts/myelinate.py` | **none** | the CLI is the only entry point; no assertions anywhere in the file |
 | `benchmarks/common.py` | **none** | `pack_blocks`, `replay`, `downgrade`, `jaccard`, `day` are unverified |
 | `benchmarks/metrics.py` | **none** | every metric definition is unverified |
-| `benchmarks/run_bench.py` | **none** | `verdict()`, `pairwise()`, the report renderer and the judge-limit path are unverified |
+| `benchmarks/run_bench.py` | **none** | the module still has no `__main__`, but `verdict()` and the report renderer the review flagged are now pinned by `benchmarks/test_harness.py` (W0.9/W0.10); `pairwise()` is exercised through `stats.py` and the judge-limit path through `test_llm_judge.py` |
 | `benchmarks/stats.py` | **yes**, ~12 asserts | Wilcoxon identical samples → `(0.0, 1.0)`; a clear shift → `p < 0.05`; `cliffs_delta` sign; bootstrap CI contains the mean and is seed-deterministic; Holm rejects/passes; `paired_summary` significance, and non-significance at n = 3; `format_p`; `percentile` |
-| `benchmarks/engines.py` | **yes**, 2 asserts | 10 offline arms are built; each has `recall_ms` |
+| `benchmarks/engines.py` | **yes**, 2 asserts | 16 offline arms are built (`M0`–`M13`, including the `M3k`/`M3p`/`M3t` allocator controls and R12's `M13`); each has `recall_ms` |
 | `benchmarks/judge.py` | **yes**, 7 asserts | oracle extracts a line from a context; `contains` and `exact` grading; empty context → empty answer; `make_judge("oracle")` mode; `describe()` refuses the LLM label |
 | `benchmarks/stub_llm.py` | **yes**, 5 asserts | the stub's request→response mapping: answering, forced 0 score, HTTP 500 |
 | `benchmarks/test_llm_judge.py` | **yes**, 71 assertions (22 at the time of this review, 60 after round 4) | the OpenAI-, Gemini- **and** NVIDIA-protocol paths end to end against the local stub: request shape, parsing, cache, HTTP-500 error, judge selection and descriptions, round-4 coverage for the free-tier pace, the 429 backoff, `Retry-After` and the `JUDGE_MAX_CALLS` budget, and round-5 coverage proving `auto`/`oracle` stay offline with an NVIDIA key present and that Gemini and OpenAI keep selection priority |
@@ -54,19 +54,26 @@ changed by the review itself.
 | `benchmarks/test_harness.py` | **yes**, 204 checks | W0.9/W0.10, the list this review called "still unverified": metric definitions pinned to hand-computed values (nDCG to its closed form and a literal), `verdict()` fixtures (NOT MEASURED over phantom FAIL, informational rows out of the denominator, BOTH flat baselines for significance), replay determinism apart from wall-clock latency, the budget invariant across every offline arm at three budgets, the LoCoMo conversion when its cache is present (and its absence a clean state), the report renderer, and the D15 output-path guards including the relative-spelling regression |
 | `benchmarks/test_adversarial.py` | **yes**, 88 checks | the myelination council's code-and-architecture review, four chairs over every store rule and protocol contract: store & persistence (schema-version refusal S3, corrupt stores, load-replaces-not-merges, save atomicity and id uniqueness, retire-then-restate ids, S6 refuted and pinned), the algebra of decay (the decay semigroup fuzzed over refresh schedules, realize idempotence, dead memories never strengthened — S4), the recall/budget contract (the hard ceiling fuzzed over unicode stores at six budgets, determinism, tier respect), and protocol robustness (the MCP server survives hostile JSON-RPC lines — S1/S2 — and keeps serving; the CLI fails cleanly — S5) |
 | `benchmarks/synthetic.py` | **yes**, a validator over every scenario | unique ids and event ordering; evidence/stale exist and precede the query; the staleness suites retire (or provably do not retire) their stale ids; filler > 200 so the budget binds; stale/evidence Jaccard < 0.9 so collapsing cannot be mistaken for staleness handling; **globally unique query ids** (a collision would silently corrupt paired statistics) |
-| `benchmarks/public_locomo.py` | prints counts, **asserts nothing** | the LoCoMo conversion that defines that tier's ground truth is unverified |
+| `benchmarks/public_locomo.py` | **yes**, `validate()` with a non-zero exit | the conversion that defines the LoCoMo tier's ground truth: every query's `evidence_ids` names a turn its Scenario really adds, and every query is asked at the conversation's last session; `test_harness.py`'s LoCoMo gate runs the same validator when the cache is present and checks that a missing cache is a clean `RuntimeError` when it is not |
 
 Run them all:
 
 ```bash
-python3 benchmarks/stats.py            # stats ok
-python3 benchmarks/engines.py          # engines ok
-python3 benchmarks/judge.py            # judge ok
-python3 benchmarks/stub_llm.py         # stub ok
-python3 benchmarks/synthetic.py        # synthetic ok: 14 scenarios, 33 queries, ...
-python3 benchmarks/test_llm_judge.py   # llm judge ok: 71 assertions
-python3 benchmarks/test_adversarial.py # adversarial ok: 88 checks
-python3 benchmarks/run_bench.py        # full run only: writes RESULTS.md + results/raw.json
+python3 benchmarks/stats.py                    # stats ok
+python3 benchmarks/engines.py                  # engines ok
+python3 benchmarks/judge.py                    # judge ok
+python3 benchmarks/stub_llm.py                 # stub ok
+python3 benchmarks/synthetic.py                # synthetic ok: 14 scenarios, 33 queries, ...
+python3 benchmarks/test_llm_judge.py           # llm judge ok: 71 assertions
+python3 benchmarks/test_harness.py             # harness ok: 204 checks
+python3 benchmarks/test_adversarial.py         # adversarial ok: 88 checks
+python3 benchmarks/test_engine.py              # engine ok: 181 checks
+python3 scripts/myelinated_mcp.py --selftest   # mcp ok: 10 checks
+python3 -m py_compile scripts/myelinate.py scripts/myelinated_mcp.py benchmarks/*.py
+
+# Deliberate, not a check: the full default run rewrites the committed report
+# (benchmarks/RESULTS.md + results/raw.json); a scoped run writes RESULTS-<tier>.md instead.
+python3 benchmarks/run_bench.py
 ```
 
 So the harness assertions have grown well past the roughly **48** this review

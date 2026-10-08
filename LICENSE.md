@@ -21,3 +21,16 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Ownership and future licensing
+
+This project is owned by Tom Sturgeon.
+
+This license grants everyone the right to use, modify, and distribute the
+Software under the MIT terms from the date of this file forward. Ownership and
+copyright remain with Tom Sturgeon.
+
+The owner reserves the right to change the license, to distribute future
+versions of this project under a different license, or to license future
+versions as closed source. That choice applies only to future versions; it
+does not revoke the MIT rights granted to this version of the Software.

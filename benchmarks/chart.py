@@ -42,13 +42,13 @@ CHART_ARMS = [
 # Claims made in README.md / docs/POST.md, checked against the raw evidence so
 # the prose cannot drift from the data. Each is (arm, metric, expected, quoted-as).
 CLAIMS = [
-    ("M11 myelinated +lexical ranking", "hit_rate", 0.893, "shipped hit rate"),
-    ("M11 myelinated +lexical ranking", "chars_per_hit", 1279, "shipped chars/hit"),
-    ("M3k BM25 +engine packer", "hit_rate", 0.893, "control hit rate"),
-    ("M3k BM25 +engine packer", "chars_per_hit", 1296, "control chars/hit"),
-    ("M3 semantic/BM25", "ndcg@10", 0.732, "BM25 ranking"),
-    ("M1 flat/FIFO", "chars_per_hit", 1734, "flat chars/hit"),
-    ("M2 recency/LRU", "chars_per_hit", 2201, "recency chars/hit"),
+    ("M11 myelinated +lexical ranking", "hit_rate", 0.895, "shipped hit rate"),
+    ("M11 myelinated +lexical ranking", "chars_per_hit", 1293, "shipped chars/hit"),
+    ("M3k BM25 +engine packer", "hit_rate", 0.895, "control hit rate"),
+    ("M3k BM25 +engine packer", "chars_per_hit", 1310, "control chars/hit"),
+    ("M3 semantic/BM25", "ndcg@10", 0.736, "BM25 ranking"),
+    ("M1 flat/FIFO", "chars_per_hit", 1742, "flat chars/hit"),
+    ("M2 recency/LRU", "chars_per_hit", 2253, "recency chars/hit"),
 ]
 
 

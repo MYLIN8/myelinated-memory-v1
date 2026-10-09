@@ -43,7 +43,7 @@ That is the pitch. The honest part comes next.
 
 ## What the numbers actually say
 
-The project includes its own offline benchmark: 33 scenarios, 206 queries, a 2200-character
+The project includes its own offline benchmark: 36 scenarios, 209 queries, a 2200-character
 budget, replayed on a virtual clock so decay and access patterns are reproducible. The judge
 is a deterministic evidence-containment oracle — it rewards surfacing the right line, not
 reasoned answers. That is intentional: it makes the run free, offline, and repeatable.
@@ -54,12 +54,12 @@ Every figure below is from the **committed report** (`benchmarks/RESULTS.md`, fu
 seed 0, offline oracle judge); a separate hold-out confirmation on seeds 3–4 is quoted where
 it exists and is labelled as such.
 
-- **Evidence hit rate:** 0.893 — level with the strongest semantic baseline tested in the
-  suite (the BM25+packer control also scores 0.893).
-- **Characters per evidence hit:** 1279 — cheaper than the BM25+packer control's 1296 and far
-  cheaper than a flat FIFO store's 1734 or a recency cache's 2201. (Hold-out seeds 3–4:
+- **Evidence hit rate:** 0.895 — level with the strongest semantic baseline tested in the
+  suite (the BM25+packer control also scores 0.895).
+- **Characters per evidence hit:** 1293 — cheaper than the BM25+packer control's 1310 and far
+  cheaper than a flat FIFO store's 1742 or a recency cache's 2253. (Hold-out seeds 3–4:
   1276–1283 against 1294–1301 — same ordering.)
-- **nDCG@10:** 0.699 rank / 0.689 packed — behind plain BM25's 0.732. (Hold-out seeds 3–4:
+- **nDCG@10:** 0.703 rank / 0.693 packed — behind plain BM25's 0.736. (Hold-out seeds 3–4:
   0.697–0.702 rank; BM25's control arm 0.731–0.734.)
 - **Public LoCoMo tier:** 0.683 hit rate — behind the allocator-control arm that pairs BM25
   ranking with this engine's packer, which scored 0.717. (Same on both hold-out seeds.)
@@ -86,14 +86,14 @@ evidence hit** on the project's own offline suite.
 | Configuration | Evidence hit rate | Chars per evidence hit |
 | --- | ---: | ---: |
 | No memory | 0.000 | — |
-| Flat / FIFO store | 0.777 | 1734 |
-| Recency / LRU | 0.612 | 2201 |
-| Semantic / BM25 | 0.864 | 1336 |
-| Semantic / TF-IDF | 0.874 | 1541 |
-| Myelinated — as specified | 0.680 | 1935 |
-| Myelinated + similarity | 0.816 | 1614 |
-| Myelinated + value-per-char packing | 0.835 | 1572 |
-| **Myelinated — shipped default** | **0.893** | **1279** |
+| Flat / FIFO store | 0.780 | 1742 |
+| Recency / LRU | 0.603 | 2253 |
+| Semantic / BM25 | 0.866 | 1350 |
+| Semantic / TF-IDF | 0.876 | 1551 |
+| Myelinated — as specified | 0.684 | 1940 |
+| Myelinated + similarity | 0.818 | 1623 |
+| Myelinated + value-per-char packing | 0.837 | 1582 |
+| **Myelinated — shipped default** | **0.895** | **1293** |
 
 Read it as a frontier, not a leaderboard. The interesting cells are the upper-left: high
 recall, low cost. The shipped engine is not the top-right object; it is one of the few points

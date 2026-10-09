@@ -45,7 +45,7 @@ SCHEMA_VERSION = 3
 # The released version, in one place: scripts/myelinated_mcp.py advertises it to
 # every MCP client, and benchmarks/test_engine.py pins it to the newest heading in
 # CHANGELOG.md, so a release cannot leave the two disagreeing.
-__version__ = "5.2.2"
+__version__ = "5.3.0"
 DEFAULT_STORE = os.path.expanduser("~/.hermes/memory/myelinated.json")
 DEFAULT_BUDGET = 2200
 SECONDS_PER_DAY = 86400.0

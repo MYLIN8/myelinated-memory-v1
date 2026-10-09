@@ -347,6 +347,76 @@ def renderer_and_paths():
           "D15: an explicit --report path is honoured")
 
 
+# ------------------------------- 6. scale-probe resume (defect D22)
+def scale_resume():
+    """An interrupted arm's row must equal an uninterrupted one.
+
+    The scale probe can be cut off by a command timeout in the middle of an arm
+    whose row alone outlasts the cap (defect D22); the in-flight ingest state is
+    checkpointed and a later pass resumes it. Resuming must lose nothing: the
+    completed row is the one the same corpus would have produced in one pass
+    (timing fields excepted - those are wall clock), and the arm's final store
+    is identical, which is what the restored consolidation set decides.
+    """
+    import tempfile
+
+    def measure(n, days, **kwargs):
+        arm = engines.MyelinatedArm("T myelinated", similarity=True, knapsack=True,
+                                    stale_retirement=True)
+        rows = run_bench.scale_rows([arm], n, days, 0, **kwargs)
+        return rows, arm
+
+    rows_a, arm_a = measure(36, 3)
+    check(len(rows_a) == 1, "scale resume: the uninterrupted pass yields one row")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        checkpoint = os.path.join(tmp, "inflight")
+        deferred, _ = measure(36, 3, checkpoint_path=checkpoint, pass_budget_s=0.0,
+                              checkpoint_seconds=0.0)
+        check(deferred == [], "scale resume: a pass over budget defers the row")
+        check(os.path.exists(checkpoint), "scale resume: a deferred arm leaves a checkpoint")
+        rows_b, arm_b = measure(36, 3, checkpoint_path=checkpoint)
+        check(len(rows_b) == 1, "scale resume: the next pass completes the row")
+        check(not os.path.exists(checkpoint),
+              "scale resume: a completed row clears its checkpoint")
+
+        # An arm without snapshot support keeps the old atomic contract and
+        # never touches a checkpoint file.
+        flat_path = os.path.join(tmp, "flat")
+        flat_rows = run_bench.scale_rows([engines.FlatFifoArm()], 8, 2, 0,
+                                         checkpoint_path=flat_path, pass_budget_s=0.0)
+        check(len(flat_rows) == 1,
+              "scale resume: an arm without snapshot support measures atomically")
+        check(not os.path.exists(flat_path),
+              "scale resume: an atomic arm writes no checkpoint")
+
+        # A checkpoint from a different corpus is refused, never replayed.
+        measure(36, 3, checkpoint_path=checkpoint, pass_budget_s=0.0, checkpoint_seconds=0.0)
+        try:
+            measure(8, 2, checkpoint_path=checkpoint)
+        except ValueError:
+            check(True, "scale resume: a checkpoint from another corpus is refused")
+        else:
+            check(False, "scale resume: a checkpoint from another corpus is refused")
+
+    timing = {"ingest_s", "refresh_total_s", "recall_p50_ms", "recall_p95_ms",
+              "recall_total_s", "recall_p95_passes_ms"}
+    stable_a = {k: v for k, v in rows_a[0].items() if k not in timing}
+    stable_b = {k: v for k, v in rows_b[0].items() if k not in timing}
+    check(stable_a == stable_b, "scale resume: the resumed row equals the single-pass row")
+    check(arm_a.engine.to_dict() == arm_b.engine.to_dict(),
+          "scale resume: the resumed store is identical, not merely close")
+    query = "what did memory number 0 say?"
+    recall_a = arm_a.recall(query, budget=500, now=2.0)
+    recall_b = arm_b.recall(query, budget=500, now=2.0)
+
+    def deterministic(result):
+        return (result.text, result.used_ids, result.ranked_ids, result.chars, result.budget)
+
+    check(deterministic(recall_a) == deterministic(recall_b),
+          "scale resume: recall from a resumed arm is identical")
+
+
 # ------------------------------------------------------------------- fixture
 def _probe_scenario():
     """A tiny scenario long enough that the budget binds at every test size."""
@@ -379,6 +449,7 @@ def main():
     r12_wiring()
     locomo_conversion()
     renderer_and_paths()
+    scale_resume()
     print("harness ok: %d checks" % CHECKS)
     return 0
 

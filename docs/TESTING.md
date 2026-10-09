@@ -59,7 +59,7 @@ changed by the review itself.
 | `benchmarks/stub_llm.py` | **yes**, 5 asserts | the stub's request→response mapping: answering, forced 0 score, HTTP 500 |
 | `benchmarks/test_llm_judge.py` | **yes**, 71 assertions (22 at the time of this review, 60 after round 4) | the OpenAI-, Gemini- **and** NVIDIA-protocol paths end to end against the local stub: request shape, parsing, cache, HTTP-500 error, judge selection and descriptions, round-4 coverage for the free-tier pace, the 429 backoff, `Retry-After` and the `JUDGE_MAX_CALLS` budget, and round-5 coverage proving `auto`/`oracle` stay offline with an NVIDIA key present and that Gemini and OpenAI keep selection priority |
 | `benchmarks/test_engine.py` | **yes**, 209 checks (69 at the time of this review, 139 after round 4, 170 after round 5, 209 after round 6) | the engine: bounded diminishing boost, pinned memories, tier thresholds, rendering caps, the budget guarantee on both recall paths, retired-memory exclusion, duplicate collapsing, persistence and store-path precedence — plus a `known_defect()` registry that is now **empty**: the four defects it used to report are fixed and asserted, and the mechanism stays so a new tracked defect can be registered |
-| `benchmarks/test_harness.py` | **yes**, 204 checks | W0.9/W0.10, the list this review called "still unverified": metric definitions pinned to hand-computed values (nDCG to its closed form and a literal), `verdict()` fixtures (NOT MEASURED over phantom FAIL, informational rows out of the denominator, BOTH flat baselines for significance), replay determinism apart from wall-clock latency, the budget invariant across every offline arm at three budgets, the LoCoMo conversion when its cache is present (and its absence a clean state), the report renderer, and the D15 output-path guards including the relative-spelling regression |
+| `benchmarks/test_harness.py` | **yes**, 215 checks | W0.9/W0.10, the list this review called "still unverified": metric definitions pinned to hand-computed values (nDCG to its closed form and a literal), `verdict()` fixtures (NOT MEASURED over phantom FAIL, informational rows out of the denominator, BOTH flat baselines for significance), replay determinism apart from wall-clock latency, the budget invariant across every offline arm at three budgets, the LoCoMo conversion when its cache is present (and its absence a clean state), the report renderer, the D15 output-path guards including the relative-spelling regression, and the D22 scale-resume contract (an interrupted arm's resumed row equals a single-pass one, store included) |
 | `benchmarks/test_adversarial.py` | **yes**, 103 checks | the myelination council's code-and-architecture review, four chairs over every store rule and protocol contract: store & persistence (schema-version refusal S3, corrupt stores, load-replaces-not-merges, save atomicity and id uniqueness, retire-then-restate ids, S6 refuted and pinned), the algebra of decay (the decay semigroup fuzzed over refresh schedules, realize idempotence, dead memories never strengthened — S4), the recall/budget contract (the hard ceiling fuzzed over unicode stores at six budgets, determinism, tier respect), and protocol robustness (the MCP server survives hostile JSON-RPC lines — S1/S2 — and keeps serving; the CLI fails cleanly — S5) |
 | `benchmarks/synthetic.py` | **yes**, a validator over every scenario | unique ids and event ordering; evidence/stale exist and precede the query; the staleness suites retire (or provably do not retire) their stale ids; filler > 200 so the budget binds; stale/evidence Jaccard < 0.9 so collapsing cannot be mistaken for staleness handling; **globally unique query ids** (a collision would silently corrupt paired statistics) |
 | `benchmarks/public_locomo.py` | **yes**, `validate()` with a non-zero exit | the conversion that defines the LoCoMo tier's ground truth: every query's `evidence_ids` names a turn its Scenario really adds, and every query is asked at the conversation's last session; `test_harness.py`'s LoCoMo gate runs the same validator when the cache is present and checks that a missing cache is a clean `RuntimeError` when it is not |
@@ -73,7 +73,7 @@ python3 benchmarks/judge.py                    # judge ok
 python3 benchmarks/stub_llm.py                 # stub ok
 python3 benchmarks/synthetic.py                # synthetic ok: 14 scenarios, 33 queries, ...
 python3 benchmarks/test_llm_judge.py           # llm judge ok: 71 assertions
-python3 benchmarks/test_harness.py             # harness ok: 204 checks
+python3 benchmarks/test_harness.py             # harness ok: 215 checks
 python3 benchmarks/test_adversarial.py         # adversarial ok: 103 checks
 python3 benchmarks/test_engine.py              # engine ok: 209 checks
 python3 scripts/myelinated_mcp.py --selftest   # mcp ok: 10 checks
@@ -154,7 +154,7 @@ review asked for.
    that tier's ground truth.
 6. **`stats.py`'s asymptotic path is untested (low–medium).** Its own tests stay
    in the exact-test regime (n ≤ 20). The normal-approximation branch *with tie
-   correction* — the one the 206-query comparisons actually use — has no test.
+   correction* — the one the 209-query comparisons actually use — has no test.
    `_exact_two_sided_p(ranks, w_plus, w_minus)` also takes `w_minus` and never
    reads it.
 7. **CLI contract untested (low–medium).** `--pure` is global, so
@@ -261,7 +261,7 @@ for d in range(1, 31):
 
 ```python
 # 1. replay determinism: same scenario + same arm twice -> identical query_ids, used_ids, chars
-# 2. every one of the 15 arms respects the budget on a fixed scenario
+# 2. every one of the 16 arms respects the budget on a fixed scenario
 # 3. a retire event on the query's own day is applied before the recall
 # 4. downgrade() (currently called from nowhere) returns <= limit chars and is idempotent
 ```
@@ -334,7 +334,7 @@ the same protocol asks for, and that gap is recorded in
 
 ### Sweep 1, measured
 
-`benchmarks/tune_probe.py` replays the same 206 queries (all four tiers, seed 0,
+`benchmarks/tune_probe.py` replays the benchmark's queries (all four tiers, seed 0,
 2,200-char budget) with the recommended configuration and one constant changed;
 it never writes `RESULTS.md`.
 
@@ -353,16 +353,16 @@ probe was measuring the same system the report measured.
 
 **Round-4 caveat:** the numbers in this table are the round-3 measurements, taken
 before the decay fix and before the update/restatement split changed the store.
-The committed M8 row is now **0.835** hit rate, **0.639** nDCG@10 and **1572**
-characters per hit, so the control no longer reproduces it and the sweep must be
-re-run before any of it is quoted again — the conclusion (the prior is a cost to
+The committed M8 row had by then moved to **0.835** hit rate, **0.639** nDCG@10
+and **1572** characters per hit, so the control no longer reproduced it and the
+sweep had to be re-run before any of it could be quoted again — the conclusion (the prior is a cost to
 ranking) is the reason to re-run it, not to trust the old curve. **That re-run
 has since been done and it decided the constant: see "Sweep 1, re-run and
-decided (round 5)" below.** The table above is kept as the round-3 record. The
-committed report itself has also been regenerated from the round-5 code (5.1.0),
-so `benchmarks/RESULTS.md` now carries the round-5 columns — `M11` at 0.893 hit
-rate, 0.699 nDCG@10 (0.689 packed) and 1279 characters per evidence hit — rather
-than the round-4 ones this caveat was written about. **And the committed value is the second-worst point
+decided (round 5)" below.** The table above is kept as the round-3 record. The committed report has
+since been regenerated twice — from the round-5 code (5.1.0) and again from the
+current tree (5.3.0) — so `benchmarks/RESULTS.md` now carries `M11` at 0.895 hit
+rate, 0.703 nDCG@10 (0.693 packed) and 1293 characters per evidence hit, rather
+than the round-4 rows this caveat was written about. **And the committed value is the second-worst point
 on the curve.** At 0.00 the same engine beats the best semantic arm on hit rate
 (0.893 vs 0.874), beats BM25 on chars/hit (1265 vs 1336) and on the LoCoMo tier
 (0.683 vs 0.617), and closes most of the nDCG deficit (0.672 vs BM25's 0.732).

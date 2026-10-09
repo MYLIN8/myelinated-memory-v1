@@ -26,6 +26,7 @@ import argparse
 import datetime
 import json
 import os
+import pickle
 import platform
 import sys
 import time
@@ -46,6 +47,10 @@ SCALE_DAYS = 60
 # The timed recall pass is therefore repeated and the reported percentiles are
 # the median of the per-pass values (defect D2 reaching the decision rule).
 SCALE_TIMED_PASSES = 3
+# How often an in-flight scale arm is checkpointed (defect D22). Resilience,
+# not measurement: checkpoint writes happen outside the ingest timing, so this
+# cadence cannot move a number.
+CHECKPOINT_SECONDS = 20.0
 
 # The pre-registered hero: the round-4 recommended configuration, with every
 # remediation applied *at the time it was registered*. It is fixed and is never
@@ -214,9 +219,53 @@ def _win_rate(baseline: Sequence[float], other: Sequence[float]) -> float:
 
 
 # --------------------------------------------------------------------- scale
+def _write_checkpoint(path: str, arm, events_done: int, ingest_s: float,
+                      last_day, corpus: Dict) -> None:
+    """Persist an in-flight arm (defect D22). One pickled blob, written
+    atomically, so a command cut off at any moment loses at most the chunk of
+    events since the previous checkpoint. Pickle because a JSON store round
+    trip would lose the engine's live consolidation set (``_touched``), which
+    decides what the next ``refresh()`` merges - a resumed arm must be the same
+    arm, not merely a close one. This is harness scratch state written and read
+    only by the same kind of run; it is never a store interchange format.
+    """
+    payload = {
+        "arm": arm.name,
+        "corpus": dict(corpus),
+        "events_done": events_done,
+        "ingest_s": ingest_s,
+        "refresh_ms": list(arm.refresh_ms),
+        "last_day": last_day,
+        "state": arm.snapshot_state(),
+    }
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as handle:
+        pickle.dump(payload, handle)
+    os.replace(tmp, path)
+
+
+def _read_checkpoint(path: str, arm, corpus: Dict) -> Optional[Dict]:
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as handle:
+        payload = pickle.load(handle)
+    if payload.get("arm") != arm.name or payload.get("corpus") != corpus:
+        # A checkpoint from a different run is refused, never replayed: splicing
+        # two runs into one artifact is the quiet incomparability the D15 output
+        # guard exists to prevent.
+        raise ValueError(
+            "in-flight checkpoint %s belongs to arm %r on corpus %r, not %r on %r; "
+            "delete it or replay with the original flags"
+            % (path, payload.get("arm"), payload.get("corpus"), arm.name, corpus))
+    return payload
+
+
 def scale_rows(arms: Sequence, memories: int, days: int, seed: int,
                done: Optional[Dict[str, Dict]] = None,
-               on_row: Optional[Callable[[Dict], None]] = None) -> List[Dict]:
+               on_row: Optional[Callable[[Dict], None]] = None,
+               checkpoint_path: Optional[str] = None,
+               pass_budget_s: Optional[float] = None,
+               checkpoint_seconds: float = CHECKPOINT_SECONDS) -> List[Dict]:
     """Latency at scale, one row per arm.
 
     ``done`` maps an arm name to a row already measured by an earlier bounded
@@ -224,10 +273,21 @@ def scale_rows(arms: Sequence, memories: int, days: int, seed: int,
     caller can persist it and resume after a command timeout (defect D20). Each
     row is an independent measurement of one arm, so resuming loses nothing, and
     the arms are measured in the same order with the same corpus either way.
+
+    ``checkpoint_path`` extends that contract to the case D20 left open: an arm
+    whose row outlasts the command cap on its own. The ingest state of an
+    in-flight snapshot-capable arm is saved every ``checkpoint_seconds`` of work
+    and resumed by the next call, so a timeout costs only the chunk in flight
+    (defect D22). ``pass_budget_s`` lets a pass stop cleanly at the next
+    checkpoint instead of waiting to be cut off; the arm's row is then simply
+    absent from the returned rows until a later pass completes it. Checkpoint
+    writes happen outside the ingest timing and a resumed arm applies the same
+    events in the same order, so neither mechanism can move a number.
     """
     import synthetic
 
     events, queries = synthetic.scalability_corpus(seed=seed, n_memories=memories, days=days)
+    corpus = {"seed": seed, "memories": memories, "days": days}
     rows: List[Dict] = []
     for arm in arms:
         if done and arm.name in done:
@@ -236,9 +296,27 @@ def scale_rows(arms: Sequence, memories: int, days: int, seed: int,
                   file=sys.stderr)
             continue
         arm.reset()
-        start = time.perf_counter()
+        # Ingest seconds banked by earlier passes of this arm, and how many of
+        # the corpus's events those passes already applied (defect D22).
+        banked = 0.0
+        skip = 0
         last_day = None
-        for event in events:
+        if checkpoint_path and arm.supports_snapshot():
+            checkpoint = _read_checkpoint(checkpoint_path, arm, corpus)
+            if checkpoint is not None:
+                arm.restore_state(checkpoint["state"])
+                arm.refresh_ms = list(checkpoint["refresh_ms"])
+                banked = float(checkpoint["ingest_s"])
+                skip = int(checkpoint["events_done"])
+                last_day = checkpoint["last_day"]
+                print("  %-34s (resuming mid-ingest at event %d/%d)"
+                      % (arm.name, skip, len(events)), file=sys.stderr)
+        span_start = time.perf_counter()
+        spent = 0.0  # ingest seconds spent by THIS call, against pass_budget_s
+        stopped = False
+        for index, event in enumerate(events):
+            if index < skip:
+                continue
             if last_day is None or event.day != last_day:
                 arm.refresh(event.timestamp())
                 last_day = event.day
@@ -249,7 +327,26 @@ def scale_rows(arms: Sequence, memories: int, days: int, seed: int,
                 arm.retire(event.id, event.timestamp())
             else:
                 arm.access(event.id, event.timestamp())
-        ingest = time.perf_counter() - start
+            if checkpoint_path and arm.supports_snapshot():
+                span = time.perf_counter() - span_start
+                if (span >= checkpoint_seconds
+                        or (pass_budget_s is not None and spent + span >= pass_budget_s)):
+                    banked += span
+                    spent += span
+                    _write_checkpoint(checkpoint_path, arm, index + 1, banked, last_day, corpus)
+                    span_start = time.perf_counter()
+                    if pass_budget_s is not None and spent >= pass_budget_s:
+                        stopped = True
+                        break
+        if stopped:
+            print("  %-34s (pass budget reached at event %d; row deferred to a later pass)"
+                  % (arm.name, index + 1), file=sys.stderr)
+            return rows
+        ingest = banked + (time.perf_counter() - span_start)
+        if checkpoint_path and arm.supports_snapshot():
+            # Ingest complete: bank it before the timed passes below, so a pass
+            # cut off there costs the passes only, never the ingest again.
+            _write_checkpoint(checkpoint_path, arm, len(events), ingest, last_day, corpus)
 
         def pct(samples: Sequence[float], q: float) -> float:
             if not samples:
@@ -296,6 +393,8 @@ def scale_rows(arms: Sequence, memories: int, days: int, seed: int,
               file=sys.stderr)
         if on_row is not None:
             on_row(rows[-1])
+        if checkpoint_path and arm.supports_snapshot() and os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
     return rows
 
 
@@ -879,6 +978,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--state", default=None,
                         help="scratch file holding the query-tier records between --phase passes")
     parser.add_argument("--scale-memories", type=int, default=SCALE_MEMORIES)
+    parser.add_argument("--pass-budget", type=float, default=None,
+                        help="seconds of scale-probe ingest work this pass may spend before it "
+                             "checkpoints and stops cleanly (for hosts whose command timeout is "
+                             "shorter than one arm's row; re-run the same command to resume)")
     parser.add_argument("--out", default=RESULTS_DIR)
     parser.add_argument("--report", default=None,
                         help="override the report path (default: RESULTS.md for a full run, "
@@ -974,6 +1077,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # measure is kept next to the state file and reused, so the artifact is
         # still one configuration, one corpus and one arm order (defect D20).
         progress_path = (args.state + ".scale.json") if args.state else None
+        checkpoint_path = (args.state + ".scale.inflight") if args.state else None
         measured: Dict[str, Dict] = {}
         if progress_path and os.path.exists(progress_path):
             with open(progress_path, "r", encoding="utf-8") as handle:
@@ -988,16 +1092,33 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # The arms the scale probe measures, captured once so the note below counts
         # them and not `ARM_ORDER`, which also lists the opt-in network arm.
         scale_arms = build_arms(include_network=False)
-        scale = {
-            "memories": args.scale_memories,
-            "days": SCALE_DAYS,
-            "rows": scale_rows(scale_arms, args.scale_memories,
-                               SCALE_DAYS, args.seed, done=measured, on_row=_on_row),
-        }
-        if measured:
-            phases += ("; the scale probe was resumed across bounded passes (%d of %d arms "
-                       "reused from an earlier pass, not re-measured)"
-                       % (len(measured), len(scale_arms)))
+        reused = len(measured)
+        resumed_mid_arm = bool(checkpoint_path and os.path.exists(checkpoint_path))
+        try:
+            measured_rows = scale_rows(scale_arms, args.scale_memories,
+                                       SCALE_DAYS, args.seed, done=measured, on_row=_on_row,
+                                       checkpoint_path=checkpoint_path,
+                                       pass_budget_s=args.pass_budget)
+        except ValueError as exc:
+            # A stale in-flight checkpoint from another run: a clean refusal,
+            # never a traceback and never a silent splice of two runs.
+            print("[error] %s" % exc, file=sys.stderr)
+            return 2
+        scale = {"memories": args.scale_memories, "days": SCALE_DAYS, "rows": measured_rows}
+        if len(measured_rows) < len(scale_arms):
+            # A bounded pass that hit its budget renders nothing: a partial
+            # probe must not overwrite the committed artifacts (D15).
+            print("scale probe incomplete: %d of %d arms measured; every row so far is kept "
+                  "in %s - re-run the same command to resume and render the report."
+                  % (len(measured_rows), len(scale_arms), progress_path), file=sys.stderr)
+            return 0
+        if reused or resumed_mid_arm:
+            note = ("; the scale probe was resumed across bounded passes (%d of %d arms "
+                    "reused from earlier passes, not re-measured)"
+                    % (reused, len(scale_arms)))
+            if resumed_mid_arm:
+                note += ", and an interrupted arm resumed from its mid-ingest checkpoint"
+            phases += note
 
     payload = {
         "generated": datetime.datetime.now().isoformat(timespec="seconds"),

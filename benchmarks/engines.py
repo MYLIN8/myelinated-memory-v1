@@ -114,6 +114,20 @@ class TimedArm(Arm):
         self.recall_ms = []
         self._reset_store()
 
+    # -- mid-ingest snapshots (defect D22) ----------------------------------
+    # The scale probe can be cut off by a command timeout. An arm that can
+    # serialize and restore its live ingest state lets the probe checkpoint an
+    # in-flight arm and resume it in a later pass; an arm that cannot keeps the
+    # old behaviour, where a timeout loses only that arm's row.
+    def supports_snapshot(self) -> bool:
+        return False
+
+    def snapshot_state(self) -> object:
+        raise NotImplementedError
+
+    def restore_state(self, state: object) -> None:
+        raise NotImplementedError
+
     def add(self, content: str, *, memory_id: Optional[str] = None, category: str = "general",
             protected: bool = False, now: float = 0.0) -> str:
         start = time.perf_counter()
@@ -787,6 +801,21 @@ class MyelinatedArm(TimedArm):
 
     def size(self) -> int:
         return self.engine.size()
+
+    def supports_snapshot(self) -> bool:
+        return True
+
+    def snapshot_state(self) -> object:
+        # The engine object itself, pickled whole. A JSON store round trip would
+        # lose ``_touched`` - the set of memories added or accessed since the
+        # last refresh, which decides what the next ``refresh()`` consolidates -
+        # so a resumed arm would diverge from an uninterrupted one (D22). The
+        # checkpoint is harness scratch state written and read only by the same
+        # kind of run, never a store interchange format.
+        return self.engine
+
+    def restore_state(self, state: object) -> None:
+        self.engine = state
 
 
 # ---------------------------------------------------------------- registry

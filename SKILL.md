@@ -1,7 +1,7 @@
 ---
 name: myelinated-memory
 description: "Use when managing a limited context budget across stored memories: tiered recall, session-boundary consolidation, supersession."
-version: 5.1.0
+version: 5.3.0
 author: Hermes Agent
 tags: [memory, myelination, recall, prioritization, context-budget]
 ---
@@ -72,16 +72,17 @@ Read these before relying on this skill. Each is tracked with a fix in
   the first time in this project that decay alone demoted a stale fact — a lead on a three-scenario
   suite, not a proven capability. Retire what you know has been replaced.
 - **The budget win belongs to the allocator, not the store.** A BM25 arm that borrows only the
-  engine's packer leads on hit rate (0.893). As of round 5 the shipped engine ties it there
-  (0.893, at 1276 characters per evidence hit against the control's 1294) but still loses to it
-  on the public LoCoMo tier (0.683 against 0.717) and on nDCG. The packer is therefore the
-  demonstrated contributor, not the strength, decay and tier machinery — see the allocator
-  controls in [benchmarks/RESULTS.md](benchmarks/RESULTS.md) and
+  engine's packer ties the shipped engine on hit rate (0.895 each in the committed report) while
+  still beating it on the public LoCoMo tier (0.717 against 0.683) and on nDCG (0.736 against
+  0.703); the engine's edge on that pair is cost — 1293 characters per evidence hit against the
+  control's 1310. The packer is therefore the demonstrated contributor, not the strength, decay
+  and tier machinery — see the allocator controls in
+  [benchmarks/RESULTS.md](benchmarks/RESULTS.md) and
   [docs/ROUND5-STRATEGY.md](docs/ROUND5-STRATEGY.md).
-- **Ranking is fine, not best.** A plain BM25 baseline orders evidence better (nDCG@10 0.734
-  against 0.702 for the shipped engine and 0.639 for round 4's configuration). The measured win
-  over *flat* memory is budget allocation: 1276 characters per evidence hit against a flat
-  store's 1734.
+- **Ranking is fine, not best.** A plain BM25 baseline orders evidence better (nDCG@10 0.736
+  against 0.703 for the shipped engine and 0.694 for round 4's configuration). The measured win
+  over *flat* memory is budget allocation: 1293 characters per evidence hit against a flat
+  store's 1742.
 - **Round 5 changed one shipped default.** `PRIOR_WEIGHT` — how much retrieval strength competes
   with query similarity for the ranking — is now **0.0** rather than 0.35, because measured on the
   public LoCoMo tier the strength term cost hit rate at every point above zero (0.683 at 0.0

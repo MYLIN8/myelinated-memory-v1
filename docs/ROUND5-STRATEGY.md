@@ -192,3 +192,58 @@ python3 benchmarks/run_bench.py --tier all --skip-scale --seed 4 --report /tmp/r
 
 A scoped run cannot overwrite `benchmarks/RESULTS.md` or `results/raw.json` (D15), so these are
 safe to run at any time.
+
+## 9. Seven-seed pooled run (round 6, G1.2)
+
+Round 6 funded the seed protocol instead of reducing it: seeds 6–9 were run with the same
+scoped command on the current tree, and seeds 0, 3 and 4 were re-run beside them (the suite has
+grown from 206 to 209 queries since round 5, so the old rows are not pooled with the new ones).
+Every run is `--tier all --skip-scale`, offline oracle judge, 2200-character budget, 209 queries
+per arm:
+
+```
+for s in 0 3 4 6 7 8 9; do
+  python3 benchmarks/run_bench.py --tier all --skip-scale --seed $s --judge oracle \
+    --out /tmp/seed$s --report /tmp/seed$s.md
+done
+```
+
+Pooled mean [per-seed range] over seeds {0, 3, 4, 6, 7, 8, 9} (seven seeds — more than the five
+the F22 protocol asks for):
+
+| arm | hit rate | nDCG@10 | chars/hit | task success | stale leak |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| M0 no-memory | 0.000 [0.000-0.000] | 0.000 [0.000-0.000] | n/a | 0.000 [0.000-0.000] | 0.000 [0.000-0.000] |
+| M1 flat/FIFO | 0.780 [0.780-0.780] | 0.356 [0.356-0.356] | 1745 [1742-1749] | 0.565 [0.565-0.565] | 0.880 [0.880-0.880] |
+| M2 recency/LRU | 0.606 [0.603-0.612] | 0.337 [0.337-0.337] | 2246 [2226-2258] | 0.481 [0.478-0.488] | 0.640 [0.640-0.640] |
+| M3 semantic/BM25 | 0.866 [0.866-0.866] | 0.736 [0.734-0.738] | 1352 [1348-1357] | 0.555 [0.555-0.555] | 0.880 [0.880-0.880] |
+| M3k BM25 + engine packer | 0.895 [0.895-0.895] | 0.736 [0.734-0.738] | 1310 [1308-1315] | 0.545 [0.545-0.545] | 0.880 [0.880-0.880] |
+| M3p BM25 + engine ladder | 0.880 [0.880-0.880] | 0.736 [0.734-0.738] | 1332 [1329-1337] | 0.550 [0.550-0.550] | 0.880 [0.880-0.880] |
+| M3t BM25 + truncated text | 0.866 [0.866-0.866] | 0.736 [0.734-0.738] | 1357 [1354-1361] | 0.555 [0.555-0.555] | 0.880 [0.880-0.880] |
+| M4 semantic/TF-IDF | 0.876 [0.876-0.876] | 0.732 [0.730-0.736] | 1553 [1550-1557] | 0.569 [0.569-0.569] | 0.880 [0.880-0.880] |
+| M6 myelinated (pure) | 0.684 [0.684-0.684] | 0.451 [0.451-0.451] | 1939 [1938-1940] | 0.541 [0.541-0.541] | 0.640 [0.640-0.640] |
+| M7 myelinated + similarity | 0.818 [0.818-0.818] | 0.695 [0.692-0.697] | 1623 [1622-1624] | 0.565 [0.565-0.565] | 0.880 [0.880-0.880] |
+| M8 myelinated + knapsack | 0.837 [0.837-0.837] | 0.695 [0.692-0.697] | 1583 [1582-1583] | 0.565 [0.565-0.565] | 0.880 [0.880-0.880] |
+| M9 myelinated + supersession | 0.837 [0.837-0.837] | 0.695 [0.692-0.697] | 1582 [1582-1583] | 0.565 [0.565-0.565] | 0.760 [0.760-0.760] |
+| M10 myelinated + reinforcement | 0.833 [0.833-0.833] | 0.679 [0.676-0.682] | 1607 [1606-1607] | 0.560 [0.560-0.560] | 0.760 [0.760-0.760] |
+| **M11 myelinated + lexical ranking (shipped)** | 0.895 [0.895-0.895] | 0.702 [0.700-0.706] | 1293 [1289-1297] | 0.545 [0.545-0.545] | 0.760 [0.760-0.760] |
+| M12 myelinated + unbounded candidates | 0.833 [0.833-0.833] | 0.679 [0.676-0.682] | 1607 [1606-1607] | 0.560 [0.560-0.560] | 0.760 [0.760-0.760] |
+| M13 myelinated + supersession (auto-update off) | 0.837 [0.837-0.837] | 0.695 [0.692-0.697] | 1582 [1582-1583] | 0.565 [0.565-0.565] | 0.760 [0.760-0.760] |
+
+**Reading.** The round-5 verdicts hold on all seven seeds: M11 ties M3k on hit rate (0.895
+and 0.895 on every seed), beats it on characters per hit (pooled 1293 against 1310, M11 lower
+on all seven), and trails on nDCG@10 (pooled 0.702 against 0.736). M11 passes all four F18
+thresholds on every one of the seven seeds. The pooled stale leak is 0.760 for the shipped
+engine against 0.880 for the control — reported, not claimed: the leak criterion is the
+decision rule's to score, and decay-only staleness still fails there.
+
+**Seed-invariance note.** Hit rate, task success and leak are bit-identical across all seven
+seeds for every arm; only nDCG (±0.004) and characters per hit (±4) move. The seed varies the
+run's sampling, not the query set, so seven seeds agree this closely — that corroborates the
+verdicts, and it also means seeds are a weak stress of this suite. A stronger seed protocol
+would vary the scenarios, not just the seed.
+
+**What of F22 stays open.** The pooled evidence — the reason the protocol exists — is now
+recorded above. The instrument tail is not: there is still no `--seeds a,b,c` multi-run flag
+(each seed above is a separate process), the staleness generator is still unparameterised, and
+no model-judged run exists. Those are tooling, not evidence, and they stay open.

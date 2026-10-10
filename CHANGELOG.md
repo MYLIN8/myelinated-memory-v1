@@ -17,6 +17,48 @@ then regenerated it from the round-5 code, so the committed report and the
 figures quoted under [5.1.0] are the same run, and 5.0.0's table stands as the
 hold-out confirmation of it.
 
+## [5.4.0] - 2026-10-10
+
+The round-6 closeout: cross-process determinism, the dead-code deletion, the concurrency
+contract and the seed protocol. No published number moves — a seed-0 query-tier re-run on
+this tree reproduces `benchmarks/results/raw.json` on all sixteen arms with zero non-latency
+differences — so the committed report, the decision rule and the shipped configuration are
+untouched.
+
+### Added
+
+- Cross-process determinism checks: the adversarial suite replays a 200-memory recall probe
+  under two `PYTHONHASHSEED` values and requires byte-identical output, and requires the
+  `QUERY_TERM_LIMIT` truncation to keep the query-order prefix on ties (4 checks).
+- Concurrency fixtures: last-write-wins is asserted against two writers on one path, and a
+  60-generation writer thread is raced against a loading reader thread with zero bad reads
+  allowed (3 checks).
+- Seven-seed pooled evidence: seeds 6–9 run with the scoped command plus re-runs of seeds
+  0, 3 and 4 on the current tree, pooled as means with per-seed ranges in
+  `docs/ROUND5-STRATEGY.md` §9. `M11` passes all four F18 thresholds on every seed; the
+  round-5 verdicts (tie on hit rate, win on cost, trail on nDCG) hold on all seven.
+
+### Changed
+
+- `similarity_scores` breaks query-term weight ties by term string and sums dots with
+  `math.fsum`, so equal scores keep one cross-process order instead of hash order.
+- The concurrency contract is now written down: last-write-wins with no lock, a superseded
+  writer keeps serving stale state, and a concurrent reader always sees one complete
+  generation, never a torn file (README, `SKILL.md`).
+
+### Removed
+
+- **Labelled protocol change:** `_cluster()` is deleted — nothing in the tree read its output.
+  `refresh()` no longer returns a `clusters` key, and `Memory.cluster` and `CLUSTER_JACCARD`
+  are gone, with the unreachable `render(..., "stub")` branch note. Pre-5.4 stores load
+  through the field filter and re-save without the field; no migration and no schema bump.
+
+### Fixed
+
+- `ranked_ids` (and the rank-order nDCG column) could permute between processes: hash-ordered
+  term summation differed in the last ulp across `PYTHONHASHSEED` values, flipping tie order.
+  Reported metrics were unaffected on every seed measured; only replay identity was at stake.
+
 ## [5.3.0] - 2026-10-09
 
 The measurement release: `benchmarks/RESULTS.md` and `benchmarks/results/raw.json` are

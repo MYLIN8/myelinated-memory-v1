@@ -45,7 +45,7 @@ SCHEMA_VERSION = 3
 # The released version, in one place: scripts/myelinated_mcp.py advertises it to
 # every MCP client, and benchmarks/test_engine.py pins it to the newest heading in
 # CHANGELOG.md, so a release cannot leave the two disagreeing.
-__version__ = "5.3.0"
+__version__ = "5.4.0"
 DEFAULT_STORE = os.path.expanduser("~/.hermes/memory/myelinated.json")
 DEFAULT_BUDGET = 2200
 SECONDS_PER_DAY = 86400.0
@@ -77,8 +77,6 @@ LATENT_THRESHOLD = 0.1
 
 # ASSUMPTION: duplicate collapsing threshold (Jaccard over content tokens).
 DUPLICATE_JACCARD = 0.9
-# ASSUMPTION: clustering threshold for session-boundary consolidation.
-CLUSTER_JACCARD = 0.5
 SUMMARY_MAX_CHARS = 160
 # ASSUMPTION (R7): an archived memory renders a short gist of its content, not
 # an opaque id stub. The specification says "ID stub only", but on a large
@@ -262,7 +260,6 @@ class Memory:
     # boundary can never compound it.
     score_at: float = 0.0
     protected: bool = False
-    cluster: Optional[str] = None
     tier: str = "active"
     retired: bool = False
     superseded_by: Optional[str] = None
@@ -452,10 +449,9 @@ class MyelinatedMemory:
     ) -> List[str]:
         """Ids ranked by how many sketch keys they share with ``sketch``.
 
-        The engine's one candidate-generation algorithm: ``_candidates``
-        (duplicate and update lookup) and ``_cluster`` (ingest-time consolidation)
-        differ only in which postings they read and which ceilings apply, so they
-        share this body instead of keeping two copies that can drift apart.
+        It backs ``_candidates`` (duplicate and update lookup), the only caller:
+        the ingest-time clustering pass that shared this body was deleted in
+        5.4.0, because nothing in the tree read its output.
 
         Keys are read rarest-first and the scan stops after ``scan_cap`` postings,
         so one common key can never make a lookup scan the whole store. Candidates
@@ -604,7 +600,6 @@ class MyelinatedMemory:
             score=PROTECTED_SCORE if protected else INITIAL_SCORE,
             score_at=now,
             protected=bool(protected),
-            cluster=None,
         )
         mem.tier = tier_for(mem.score, mem.protected)
         self.memories[mem.id] = mem
@@ -706,7 +701,10 @@ class MyelinatedMemory:
         for mem_id, tf in counts.items():
             vec = {t: c * self._idf[t] for t, c in tf.items()}
             self._dvec[mem_id] = vec
-            self._dnorm[mem_id] = math.sqrt(sum(w * w for w in vec.values()))
+            # fsum is exactly rounded, so the norm cannot depend on the
+            # hash-order iteration of the token set (cross-process replay
+            # must be byte-identical, not just metric-identical).
+            self._dnorm[mem_id] = math.sqrt(math.fsum(w * w for w in vec.values()))
         self._sim_dirty = False
 
     def similarity_scores(self, query: str) -> Dict[str, float]:
@@ -719,21 +717,20 @@ class MyelinatedMemory:
         for token in _tokens(query):
             q_tf[token] = q_tf.get(token, 0) + 1
         q_vec = {t: c * self._idf.get(t, 0.0) for t, c in q_tf.items()}
-        q_norm = math.sqrt(sum(w * w for w in q_vec.values()))
+        q_norm = math.sqrt(math.fsum(w * w for w in q_vec.values()))
         if q_norm == 0.0:
             return {}
-        items = sorted(q_vec.items(), key=lambda kv: -kv[1])[:QUERY_TERM_LIMIT]
+        # The term tiebreak keeps the QUERY_TERM_LIMIT cut deterministic:
+        # without it, equal-weight terms keep their hash-order input order
+        # and two processes can hand the dot product different term sets.
+        items = sorted(q_vec.items(), key=lambda kv: (-kv[1], kv[0]))[:QUERY_TERM_LIMIT]
         out: Dict[str, float] = {}
         for mem_id, vec in self._dvec.items():
             norm = self._dnorm.get(mem_id, 0.0)
             if norm == 0.0:
                 out[mem_id] = 0.0
                 continue
-            dot = 0.0
-            for token, weight in items:
-                hit = vec.get(token)
-                if hit:
-                    dot += weight * hit
+            dot = math.fsum(weight * vec[token] for token, weight in items if token in vec)
             out[mem_id] = dot / (q_norm * norm)
         return out
 
@@ -760,13 +757,11 @@ class MyelinatedMemory:
         touched = [mem_id for mem_id in self._touched if mem_id in self.memories]
         self._touched = set()
         merged = self._collapse_duplicates(touched)
-        clusters = self._cluster(touched)
         pruned = self._prune(max_entries)
         deficit = max(0, len(self.memories) - max_entries) if max_entries > 0 else 0
         return {
             "decayed": decayed,
             "merged": merged,
-            "clusters": clusters,
             "pruned": pruned,
             "prune_deficit": deficit,
             "total": len(self.memories),
@@ -794,7 +789,10 @@ class MyelinatedMemory:
         # A future caller that has NOT realized first must compare
         # ``strength(m, now)`` instead, or it compares values measured at
         # different times - which is the D1 error in a new coat.
-        ordered.sort(key=lambda m: (-m.score, m.created))
+        # The id tiebreak keeps merge order deterministic: without it, exact
+        # ties keep the hash-order input order of the touched set and two
+        # processes can merge a three-way duplicate race in different orders.
+        ordered.sort(key=lambda m: (-m.score, m.created, m.id))
         for mem in ordered:
             if mem.id not in self.memories or mem.retired:
                 # Already merged away by an earlier pass, or retired: a retired memory
@@ -834,44 +832,6 @@ class MyelinatedMemory:
             merged += 1
         return merged
 
-    def _cluster(self, touched_ids: List[str]) -> int:
-        # Deliberately still governed by the module constants MAX_POSTINGS_SCAN and
-        # MAX_CANDIDATES rather than by the per-instance recall knobs: clustering is
-        # an ingest-time consolidation step, and the knobs exist to attribute
-        # *recall* differences. Wiring them in here would change measured ingest
-        # cost for any arm that lifts a ceiling - a different experiment.
-        reps_index: Dict[int, List[str]] = {}
-        rep_of: Dict[str, str] = {}
-        counts: Dict[str, int] = {}
-        ordered = [self.memories[i] for i in touched_ids if i in self.memories]
-        ordered.sort(key=lambda m: m.created)
-        for mem in ordered:
-            tokens = self._tok_of(mem)
-            size = len(tokens)
-            sketch = self._sketch_for_memory(mem)
-            rep_id = None
-            ranked = self._rank_by_shared_keys(
-                sketch, reps_index, MAX_POSTINGS_SCAN, MAX_CANDIDATES)
-            for candidate_id in ranked:
-                candidate = self.memories.get(candidate_id)
-                if candidate is None:
-                    continue
-                candidate_tokens = self._tok_of(candidate)
-                if not could_match(size, len(candidate_tokens), CLUSTER_JACCARD):
-                    continue
-                if jaccard(tokens, candidate_tokens) >= CLUSTER_JACCARD:
-                    rep_id = rep_of.get(candidate.id, candidate.id)
-                    break
-            if rep_id is None:
-                rep_id = mem.id
-                rep_of[mem.id] = mem.id
-                for key in self._bands(sketch):
-                    reps_index.setdefault(key, []).append(mem.id)
-            mem.cluster = rep_id
-            rep_of[mem.id] = rep_id
-            counts[rep_id] = counts.get(rep_id, 0) + 1
-        return sum(1 for n in counts.values() if n > 1)
-
     def _prune(self, max_entries: int) -> int:
         if max_entries <= 0 or len(self.memories) <= max_entries:
             return 0
@@ -897,11 +857,7 @@ class MyelinatedMemory:
         )
 
     def render(self, mem: Memory, detail: str) -> str:
-        """Text for a memory at a given tier detail: full, summary or gist.
-
-        ``stub`` is kept for callers that want the bare id (and for the CLI),
-        but the recall ladder no longer uses it: see GIST_MAX_CHARS.
-        """
+        """Text for a memory at a given tier detail: full, summary or gist."""
         if detail == "full":
             return mem.content
         if detail == "summary":

@@ -11,8 +11,8 @@ changed by the review itself.
    decay, the similarity index not invalidated by `retire()`, double
    tokenisation on `add()`, a write-only cluster pass on the refresh hot path —
    lives in the one file nothing tests. **Round-4 status:** closed —
-   `benchmarks/test_engine.py` now covers the engine with 209 checks (139 after
-   round 4, 170 after round 5, 181 after round 5.2, 209 after round 6), and the decay,
+   `benchmarks/test_engine.py` now covers the engine with 210 checks (139 after
+   round 4, 170 after round 5, 181 after round 5.2, 209 at the round-6 intake, 210 after), and the decay,
    index-invalidation and update/restatement defects are
    asserted for real rather than registered as known. **Round-5 additions:** the
    settable recall parameters (`prior_weight` and the three candidate ceilings,
@@ -58,9 +58,9 @@ changed by the review itself.
 | `benchmarks/judge.py` | **yes**, 7 asserts | oracle extracts a line from a context; `contains` and `exact` grading; empty context → empty answer; `make_judge("oracle")` mode; `describe()` refuses the LLM label |
 | `benchmarks/stub_llm.py` | **yes**, 5 asserts | the stub's request→response mapping: answering, forced 0 score, HTTP 500 |
 | `benchmarks/test_llm_judge.py` | **yes**, 71 assertions (22 at the time of this review, 60 after round 4) | the OpenAI-, Gemini- **and** NVIDIA-protocol paths end to end against the local stub: request shape, parsing, cache, HTTP-500 error, judge selection and descriptions, round-4 coverage for the free-tier pace, the 429 backoff, `Retry-After` and the `JUDGE_MAX_CALLS` budget, and round-5 coverage proving `auto`/`oracle` stay offline with an NVIDIA key present and that Gemini and OpenAI keep selection priority |
-| `benchmarks/test_engine.py` | **yes**, 209 checks (69 at the time of this review, 139 after round 4, 170 after round 5, 209 after round 6) | the engine: bounded diminishing boost, pinned memories, tier thresholds, rendering caps, the budget guarantee on both recall paths, retired-memory exclusion, duplicate collapsing, persistence and store-path precedence — plus a `known_defect()` registry that is now **empty**: the four defects it used to report are fixed and asserted, and the mechanism stays so a new tracked defect can be registered |
+| `benchmarks/test_engine.py` | **yes**, 210 checks (69 at the time of this review, 139 after round 4, 170 after round 5, 210 after round 6) | the engine: bounded diminishing boost, pinned memories, tier thresholds, rendering caps, the budget guarantee on both recall paths, retired-memory exclusion, duplicate collapsing, persistence and store-path precedence, and the 5.4.0 protocol change (`refresh()` returns no `clusters` key) — plus a `known_defect()` registry that is now **empty**: the four defects it used to report are fixed and asserted, and the mechanism stays so a new tracked defect can be registered |
 | `benchmarks/test_harness.py` | **yes**, 215 checks | W0.9/W0.10, the list this review called "still unverified": metric definitions pinned to hand-computed values (nDCG to its closed form and a literal), `verdict()` fixtures (NOT MEASURED over phantom FAIL, informational rows out of the denominator, BOTH flat baselines for significance), replay determinism apart from wall-clock latency, the budget invariant across every offline arm at three budgets, the LoCoMo conversion when its cache is present (and its absence a clean state), the report renderer, the D15 output-path guards including the relative-spelling regression, and the D22 scale-resume contract (an interrupted arm's resumed row equals a single-pass one, store included) |
-| `benchmarks/test_adversarial.py` | **yes**, 103 checks | the myelination council's code-and-architecture review, four chairs over every store rule and protocol contract: store & persistence (schema-version refusal S3, corrupt stores, load-replaces-not-merges, save atomicity and id uniqueness, retire-then-restate ids, S6 refuted and pinned), the algebra of decay (the decay semigroup fuzzed over refresh schedules, realize idempotence, dead memories never strengthened — S4), the recall/budget contract (the hard ceiling fuzzed over unicode stores at six budgets, determinism, tier respect), and protocol robustness (the MCP server survives hostile JSON-RPC lines — S1/S2 — and keeps serving; the CLI fails cleanly — S5) |
+| `benchmarks/test_adversarial.py` | **yes**, 110 checks (103 at the round-6 intake, 110 after) | the myelination council's code-and-architecture review, four chairs over every store rule and protocol contract: store & persistence (schema-version refusal S3, corrupt stores, load-replaces-not-merges, save atomicity and id uniqueness, retire-then-restate ids, S6 refuted and pinned, the last-write-wins concurrency contract with no torn file under a concurrent writer), the algebra of decay (the decay semigroup fuzzed over refresh schedules, realize idempotence, dead memories never strengthened — S4), the recall/budget contract (the hard ceiling fuzzed over unicode stores at six budgets, determinism within a process and byte-identical replay across `PYTHONHASHSEED` values, the `QUERY_TERM_LIMIT` query-order prefix on ties, tier respect), and protocol robustness (the MCP server survives hostile JSON-RPC lines — S1/S2 — and keeps serving; the CLI fails cleanly — S5) |
 | `benchmarks/synthetic.py` | **yes**, a validator over every scenario | unique ids and event ordering; evidence/stale exist and precede the query; the staleness suites retire (or provably do not retire) their stale ids; filler > 200 so the budget binds; stale/evidence Jaccard < 0.9 so collapsing cannot be mistaken for staleness handling; **globally unique query ids** (a collision would silently corrupt paired statistics) |
 | `benchmarks/public_locomo.py` | **yes**, `validate()` with a non-zero exit | the conversion that defines the LoCoMo tier's ground truth: every query's `evidence_ids` names a turn its Scenario really adds, and every query is asked at the conversation's last session; `test_harness.py`'s LoCoMo gate runs the same validator when the cache is present and checks that a missing cache is a clean `RuntimeError` when it is not |
 
@@ -74,8 +74,8 @@ python3 benchmarks/stub_llm.py                 # stub ok
 python3 benchmarks/synthetic.py                # synthetic ok: 14 scenarios, 33 queries, ...
 python3 benchmarks/test_llm_judge.py           # llm judge ok: 71 assertions
 python3 benchmarks/test_harness.py             # harness ok: 215 checks
-python3 benchmarks/test_adversarial.py         # adversarial ok: 103 checks
-python3 benchmarks/test_engine.py              # engine ok: 209 checks
+python3 benchmarks/test_adversarial.py         # adversarial ok: 110 checks
+python3 benchmarks/test_engine.py              # engine ok: 210 checks
 python3 scripts/myelinated_mcp.py --selftest   # mcp ok: 10 checks
 python3 -m py_compile scripts/myelinate.py scripts/myelinated_mcp.py benchmarks/*.py
 
@@ -86,7 +86,7 @@ python3 benchmarks/run_bench.py
 
 So the harness assertions have grown well past the roughly **48** this review
 counted — 71 of them now live in `test_llm_judge.py` alone — and the engine,
-which had none, is covered by **209 checks**. The best check in the repo is still
+which had none, is covered by **210 checks**. The best check in the repo is still
 `synthetic.py`'s validator, and it prevents a class of failure
 (query-id collisions) that would have quietly merged two different questions in
 the paired statistics. That list now includes the engine, which is the change this
@@ -169,8 +169,8 @@ Plain Python, no pytest, sibling imports — the same style as
 `benchmarks/test_llm_judge.py`, so each file runs as a script.
 
 **Status: the engine suite is implemented, green, and carries no known-defect
-lines.** `benchmarks/test_engine.py` reports **209 checks** (69 at the time of
-this review, 139 after round 4, 170 after round 5) and is listed in §1; its `known_defect()` registry is **empty**,
+lines.** `benchmarks/test_engine.py` reports **210 checks** (69 at the time of
+this review, 139 after round 4, 170 after round 5, 210 after round 6) and is listed in §1; its `known_defect()` registry is **empty**,
 because the four defects it used to report (W0.1, W0.7, D13, D14) are fixed and
 asserted. The metric, verdict and harness suites below are still W0.9–W0.10, so
 several of the cases they describe are now fixed in code but unasserted by a test.
@@ -181,7 +181,7 @@ suite is ignored within a week), the suite registers them with
 `known_defect(tracking, description, present)`:
 
 ```
-engine ok: 209 checks
+engine ok: 210 checks
   # and no KNOWN DEFECT line: W0.1, W0.7, D13 and D14 are asserted for real now
 ```
 
@@ -284,14 +284,14 @@ never instantiates the engine and never calls `verdict()`.
 | `BOOST_ALPHA` | 0.35 | hand-set; diminishing returns via `s + α(1−s)` |
 | `ACTIVE_THRESHOLD` / `LATENT_THRESHOLD` | 0.5 / 0.1 | hand-set; these decide the tier mix, and therefore how much of each memory reaches the budget |
 | `DUPLICATE_JACCARD` | 0.9 | **measured only off-benchmark**: 97.5% collapse at Jaccard 0.96 on a probe, 0 false merges on a 500-memory negative control. Never swept against the benchmark corpus |
-| `CLUSTER_JACCARD` | 0.5 | **dead**: `_cluster()` writes `mem.cluster`, and nothing reads it |
+| `CLUSTER_JACCARD` | — | **removed in 5.4.0**: `_cluster()` wrote `mem.cluster` and nothing read it, so the method, the constant, the field and the `clusters` refresh key are deleted as a labelled protocol change |
 | `SUMMARY_MAX_CHARS` / `GIST_MAX_CHARS` | 160 / 64 | hand-set; jointly decide how many memories fit a 2,200-char budget, so they move hit rate and `chars_per_hit` directly |
 | `SKETCH_SIZE` / `BAND_ROWS` / `MAX_POSTINGS_SCAN` | 8 / 1 / 96 | **the only measured values in the engine**: bottom-8 single-hash banding chosen after `r=2` banding measured 62.6% recall at Jaccard 0.93 and was rejected |
 | `MAX_CANDIDATES` | 64 | hand-set cap on comparisons per memory. Round 5 made all three ceilings settable per instance (`max_candidates`, `max_postings_scan`, `recall_pool`; `0` means unbounded) so they can be ablated, and arm `M12` measures them collectively as **not** the cause of the ranking deficit — `M12` reproduces `M10` exactly on both hold-out seeds |
 | `RECALL_POOL` | 600 | reasoned (the budget fills long before the pool empties), never swept — probably slack at a 2,200-char budget. Consistent with `M12`: lifting it changes nothing on these tiers, because the pool cut is applied to the ranker's input while the ranking path itself scans the live store |
 | `DETAIL_VALUE` | full 1.0, summary 0.55, gist 0.25 | hand-set; the packer's entire preference order rests on these three numbers |
 | `PRIOR_WEIGHT` | **0.0** | **MEASURED (round 5)** — the first engine constant whose value was chosen by a pre-registered experiment rather than hand-set. It was 0.35 since round 1, and it was the most consequential value in the file: it is why the same cosine ranker scores nDCG 0.729 as a baseline (M4) but 0.690 with the prior blended in (M7) and 0.606 once the packer reorders (M8). It adds a query-independent constant to a cosine, so a strongly myelinated memory that says nothing about the question can outrank the one that answers it. Arm `M11` (the prior at 0.0 on hold-out seeds 3–4) passed the criterion frozen in `docs/FIX-PLAN.md` F18 — hit rate 0.893, nDCG 0.702/0.697, chars/hit 1276/1283, task success 0.539 — so the prior is demoted to a tie-breaker and the constant ships at 0.0. `LEGACY_PRIOR_WEIGHT = 0.35` pins `M6`–`M10` and `M12` so the round-4 rows stay reproducible, and `M11` tracks the shipped default instead of hardcoding it |
-| `QUERY_TERM_LIMIT` | 48 | **hoisted, not tuned** — this cap on the query vector inside `similarity_scores()` was a bare `[:48]` in the function body, invisible to this inventory and to every sweep (**D17**), until round 5.1 hoisted it into the constants block with an `ASSUMPTION` note. Its value is unchanged, so the top-10 order is byte-identical for a fixed corpus; it is listed so that a sweep can finally see it. Not yet swept — it belongs with sweep 7, since a cap on scored query terms trades ranking quality against recall cost |
+| `QUERY_TERM_LIMIT` | 48 | **hoisted, not tuned** — this cap on the query vector inside `similarity_scores()` was a bare `[:48]` in the function body, invisible to this inventory and to every sweep (**D17**), until round 5.1 hoisted it into the constants block with an `ASSUMPTION` note. Round 6 gave the truncation a defined order: the kept terms are the top 48 by (weight, term-string), so ties no longer depend on hash order and replay is byte-identical across processes. Its value is unchanged and unswept — it belongs with sweep 7, since a cap on scored query terms trades ranking quality against recall cost |
 | `PROTECTED_PRIOR` | 1e6 | reasoned (effectively infinite) |
 | Workload: budget 2200, 60 days, 10 000 memories, filler rates, scenario counts | — | the workload definition itself; changing any of it redefines the benchmark and invalidates comparisons |
 
@@ -427,7 +427,10 @@ leader (`M3k`, BM25's ranking in the engine's packer) `M11` now **ties on hit ra
 (1276/1283 against 1294/1301)**, while still trailing on nDCG (0.702/0.697 against
 0.734/0.731) and on LoCoMo (0.683 against 0.717). The two-seed run does not meet
 this file's own ≥ 5 pooled-seed protocol, and nDCG is the one column where a
-ranking claim would still need it.
+ranking claim would still need it. **Round-6 update:** the protocol is now funded —
+seven seeds (0, 3, 4, 6–9) pooled as means with per-seed ranges in
+`docs/ROUND5-STRATEGY.md` §9, with `M11` passing F18 on every seed — so this paragraph
+is history, not a gap.
 
 **What was measured before this sweep:** nothing in the table above. Two of the
 three values that *are* measured were measured on hand-built probe corpora, and
@@ -440,7 +443,7 @@ producing a 55.6% figure that had to be withdrawn.
 ## 6. What to do with this review
 
 W0.8 (the engine regression suite) is **delivered** — `benchmarks/test_engine.py`,
-209 checks, green, with an **empty** known-defect registry because W0.1, W0.7,
+210 checks, green, with an **empty** known-defect registry because W0.1, W0.7,
 D13 and D14 are all fixed and asserted. The remaining tests are **W0.9 (metric
 and verdict fixtures)** and **W0.10 (harness invariants)** in [PLAN.md](PLAN.md),
 and round 4 makes them the most valuable open work in this review: the

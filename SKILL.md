@@ -1,7 +1,7 @@
 ---
 name: myelinated-memory
 description: "Use when managing a limited context budget across stored memories: tiered recall, session-boundary consolidation, supersession."
-version: 5.3.0
+version: 5.4.0
 author: Hermes Agent
 tags: [memory, myelination, recall, prioritization, context-budget]
 ---
@@ -83,6 +83,7 @@ Read these before relying on this skill. Each is tracked with a fix in
   against 0.703 for the shipped engine and 0.694 for round 4's configuration). The measured win
   over *flat* memory is budget allocation: 1293 characters per evidence hit against a flat
   store's 1742.
+- **One writer per store.** Concurrent writers are last-write-wins with no lock: the last `save()` silently supersedes the other writer's memories, and the superseded writer keeps serving stale state. Readers are safe — they always see one complete generation, never a torn file. Do not run two session hooks against the same store file.
 - **Round 5 changed one shipped default.** `PRIOR_WEIGHT` — how much retrieval strength competes
   with query similarity for the ranking — is now **0.0** rather than 0.35, because measured on the
   public LoCoMo tier the strength term cost hit rate at every point above zero (0.683 at 0.0

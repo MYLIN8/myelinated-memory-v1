@@ -6,6 +6,10 @@
 
 # Myelinated Memory — a compact, budget-aware recall layer for LLM agents
 
+> **Unpublished draft.** This post has not been published anywhere; the figures below are
+> pinned to the committed benchmark report (`benchmarks/RESULTS.md`, seed 0) and the
+> labelled hold-out runs, and the draft stays in the tree so those pins can be checked.
+
 A short post about a small Python memory engine, what it does, what it does not do,
 and the one chart that matters.
 

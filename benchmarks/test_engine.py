@@ -489,8 +489,10 @@ def test_prune_reports_the_deficit() -> None:
     report = engine.refresh(now=T0 + DAY, max_entries=3)
     ok(report["pruned"] == 0, "nothing can be pruned while every memory is still active")
     ok(report["prune_deficit"] == 2, "the shortfall against the ceiling must be reported")
-    ok({"decayed", "merged", "clusters", "pruned", "total"} <= set(report),
-       "the existing refresh() keys must survive")
+    ok({"decayed", "merged", "pruned", "prune_deficit", "total"} <= set(report),
+       "the surviving refresh() keys must survive")
+    ok("clusters" not in report,
+       "refresh() no longer returns a clusters key (5.4.0 protocol change)")
 
 
 def test_persistence_round_trip() -> None:

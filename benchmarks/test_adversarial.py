@@ -9,7 +9,9 @@ ran, so a confirmed and a refuted suspicion are both reported honestly.
 
   Store & persistence   - schema-version refusal, corrupt files, load
                           replacing (not merging), save atomicity, round-trip
-                          fidelity, id recycling on retire-then-restate.
+                          fidelity, id recycling on retire-then-restate, and the
+                          concurrency contract: last-write-wins, no torn file
+                          under a concurrent writer.
   Algebra of decay      - the decay semigroup over fuzzed refresh schedules,
                           realize idempotence, boost bounds, the protected
                           invariant, and dead-memory mutations.
@@ -43,6 +45,7 @@ import random
 import subprocess
 import sys
 import tempfile
+import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -83,7 +86,7 @@ def store_fixtures():
     copy = {m.id: m for m in loaded.all()}
     check(set(original) == set(copy), "load: every id survives the round trip")
     fields = ("content", "summary", "category", "created", "last_access",
-              "access_count", "score", "score_at", "protected", "cluster",
+              "access_count", "score", "score_at", "protected",
               "tier", "retired", "superseded_by")
     same = all(getattr(original[i], f) == getattr(copy[i], f)
                for i in original for f in fields)
@@ -254,6 +257,55 @@ def recall_fixtures():
           "scale: recall is deterministic at 2000 memories")
 
 
+def determinism_fixtures():
+    # Deterministic dense store + script: identical replay under any PYTHONHASHSEED.
+    probe = (
+        "import json, os, random, sys\n"
+        "sys.path.insert(0, %r)\n"
+        "from scripts import myelinate\n"
+        "rng = random.Random(7)\n"
+        "vocab = ['deploy', 'target', 'server', 'cache', 'index', 'token', 'query', 'budget']\n"
+        "mem = myelinate.MyelinatedMemory(in_memory=True)\n"
+        "for i in range(200):\n"
+        "    words = ' '.join(rng.choice(vocab) for _ in range(rng.randint(3, 9)))\n"
+        "    mem.add(words, now=float(i))\n"
+        "mem.refresh(now=200.0)\n"
+        "out = mem.recall(budget=1200, query='deploy target server cache', now=300.0)\n"
+        "sims = mem.similarity_scores('deploy target server cache')\n"
+        "json.dump({'text': out.text, 'used_ids': out.used_ids,\n"
+        "           'ranked_ids': list(out.ranked_ids),\n"
+        "           'sims': [(k, repr(v)) for k, v in sims.items()]}, sys.stdout)\n"
+    ) % os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    blobs = []
+    for seed in ("1", "2"):
+        env = dict(os.environ)
+        env["PYTHONHASHSEED"] = seed
+        proc = subprocess.run(
+            [sys.executable, "-c", probe], capture_output=True, text=True, env=env)
+        # check() raises on failure, so reaching the append means this seed
+        # replayed cleanly: blobs always holds exactly the successful outputs.
+        check(proc.returncode == 0, "determinism: seed-%s probe replays cleanly" % seed)
+        blobs.append(proc.stdout)
+    check(blobs[0] == blobs[1],
+          "determinism: recall output is byte-identical across PYTHONHASHSEED")
+    # QUERY_TERM_LIMIT truncation keeps the query-order prefix on ties.
+    cut = myelinate.MyelinatedMemory(in_memory=True)
+    for term in ("alpha", "beta", "gamma", "delta",
+                 "epsilon", "zeta", "eta", "theta"):
+        cut.add(term, now=0.0)
+    old_limit = myelinate.QUERY_TERM_LIMIT
+    myelinate.QUERY_TERM_LIMIT = 2
+    try:
+        cut_sims = cut.similarity_scores(" ".join(
+            ("alpha", "beta", "gamma", "delta",
+             "epsilon", "zeta", "eta", "theta")))
+    finally:
+        myelinate.QUERY_TERM_LIMIT = old_limit
+    cut_ids = list(cut.memories)
+    check([mid for mid, score in cut_sims.items() if score > 0.0] == cut_ids[:2],
+          "determinism: term-limit truncation keeps the query-order prefix")
+
+
 # ============================================== chair 4: protocol robustness
 def protocol_fixtures():
     server = myelinated_mcp.McpServer(myelinate.MyelinatedMemory(in_memory=True))
@@ -334,10 +386,95 @@ def protocol_fixtures():
           "CLI: an empty store is a fresh engine, not an error")
 
 
+def concurrency_fixtures():
+    # The contract: save() writes a temp file and renames it over the store,
+    # so the path never names a partial file - but there is no locking. Two
+    # writers silently supersede each other (last-write-wins) and the loser
+    # keeps serving stale state; a concurrent reader always sees one complete
+    # generation, never a torn file.
+    path = os.path.join(tempfile.gettempdir(), "adv-concurrent.json")
+    if os.path.exists(path):
+        os.remove(path)
+    first = myelinate.MyelinatedMemory(path=path)
+    first.add("the first writer's memory", now=0.0)
+    first.save()
+    second = myelinate.MyelinatedMemory(path=path)
+    second.load()
+    second.add("the second writer's memory", now=1.0)
+    second.save()
+    first.add("a stale write from the first writer", now=2.0)
+    first.save()
+    loser = myelinate.MyelinatedMemory(path=path)
+    loser.load()
+    contents = [m.content for m in loser.all()]
+    check("the second writer's memory" not in contents
+          and "a stale write from the first writer" in contents,
+          "concurrency: the last writer wins and the loser is silent")
+    # A writer publishing numbered generations while a reader loads in a tight
+    # loop: every read must parse and must name exactly one published
+    # generation (an older one is fine - that is last-write-wins from the
+    # reader's side; a partial one is a torn file and fails).
+    if os.path.exists(path):
+        os.remove(path)
+    announced: list = []
+    failures: list = []
+    stop = threading.Event()
+
+    def reader():
+        try:
+            while not stop.is_set():
+                try:
+                    # The constructor loads the store itself, so it is inside
+                    # the try: a torn file would crash construction, not just
+                    # load(), and that must count as a bad read too.
+                    probe = myelinate.MyelinatedMemory(path=path)
+                    probe.load()
+                except Exception as exc:
+                    failures.append("unreadable: %r" % (exc,))
+                    continue
+                seen = [m.content for m in probe.all()]
+                if not seen:
+                    continue  # no generation published yet
+                if len(seen) != 1 or not seen[0].startswith("generation "):
+                    failures.append("partial: %r" % (seen,))
+                    continue
+                try:
+                    gen = int(seen[0].split()[-1])
+                except ValueError:
+                    failures.append("partial: %r" % (seen,))
+                    continue
+                if gen not in announced:
+                    failures.append("unpublished: %r" % (seen,))
+        except Exception as exc:
+            # A dying reader must fail the check, not pass it vacuously: a
+            # thread dead from an exception is not alive and leaves no
+            # failures behind, so both checks below would pass on silence.
+            failures.append("reader died: %r" % (exc,))
+
+    # Daemonic so a writer-side failure fails fast: otherwise stop is never
+    # set and a spinning non-daemon reader would hang the suite instead of
+    # exiting on the failed assertion.
+    thread = threading.Thread(target=reader, daemon=True)
+    thread.start()
+    for gen in range(60):
+        announced.append(gen)
+        engine = myelinate.MyelinatedMemory(in_memory=True)
+        engine.add("generation %d" % gen, now=float(gen))
+        engine.save(path)
+    stop.set()
+    thread.join(timeout=60)
+    check(not thread.is_alive(), "concurrency: the reader thread finishes")
+    check(not failures,
+          "concurrency: no torn file is ever readable (%d bad reads)"
+          % len(failures))
+
+
 def main():
     store_fixtures()
     decay_fixtures()
     recall_fixtures()
+    determinism_fixtures()
+    concurrency_fixtures()
     protocol_fixtures()
     print("adversarial ok: %d checks" % CHECKS)
     return 0

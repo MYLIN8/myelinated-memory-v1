@@ -1,5 +1,7 @@
 # Myelinated Memory — How It Works
 
+> Numerical results in this walkthrough describe the historical 5.4.0 benchmark. See `REPAIR-RESULTS.md` for the conservative 5.5.0 comparison.
+
 *A retrieval-strength memory system for Hermes Agent, built on the biology-inspired idea that memories you use a lot should be easy to recall, and memories you don't should cost less.*
 
 ## 1. The Big Idea
@@ -47,7 +49,7 @@ Normally an AI agent has a fixed memory allowance. Everything gets the same trea
 - **Query-aware ranking** (`similarity=True`) — when a question is supplied, ranking blends TF-IDF cosine similarity with retrieval strength as `value = similarity + PRIOR_WEIGHT × score`. Since round 5 `PRIOR_WEIGHT` ships at **0.0**, acting as a tie-break rather than an ordering term: measured on the public LoCoMo tier, the strength term cost hit rate at every setting above zero (0.683 at 0.0 against 0.433 at the old 0.35), because adding a query-independent constant to a cosine lets a strongly myelinated but irrelevant memory outrank a relevant one. With no question it is score-only, exactly as originally specified.
 - **Value-per-character packing** (`knapsack=True`) — rather than filling the budget in tier order, it greedily takes the `(memory, detail)` pairs with the best expected value per character, so a cheap summary can outrank an expensive full text.
 - **Supersession** (`stale_retirement=True`) — `add(..., supersedes=id)` or `retire(id)` stops a replaced fact from being surfaced.
-- **Duplicate collapsing** — near-duplicates merge on write, found through a MinHash sketch index rather than a full scan. Above the 0.90 similarity threshold the engine separates a *restatement* (same value words, so punctuation and whitespace differences collapse) from an **update** (a value changed): an update is stored as its own memory and the superseded entry is retired with `superseded_by` set, even when the caller passes no signal (defects D13/D14, fixed in round 4).
+- **Duplicate collapsing** — the application default collapses only identical text after outer trimming. Changed wording stays distinct unless the caller supplies `supersedes=id`. The old MinHash/Jaccard restatement/update rule is retained only for historical benchmark controls (`exact_identity=False`).
 
 `python3 scripts/myelinate.py --pure ...` restores the original query-blind, tier-ordered behaviour with no supersession. That is the configuration the benchmark reports as *"Myelinated — as specified"*.
 

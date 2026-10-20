@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import tempfile
@@ -43,8 +44,8 @@ SERVER_INFO = {"name": "myelinated-memory", "version": __version__}
 TOOLS = [
     {
         "name": "memory_add",
-        "description": ("Store a memory. Near-duplicates collapse into the existing entry; "
-                        "a same-subject pair with changed wording supersedes the older one. "
+        "description": ("Store a memory. Only identical text collapses; "
+                        "use supersedes explicitly to replace a different fact. "
                         "Categories set the decay rate: identity 0.002, preference/user 0.010, "
                         "general 0.030 (default), task 0.050, ephemeral 0.100 per dormant day."),
         "inputSchema": {
@@ -102,7 +103,7 @@ TOOLS = [
             "properties": {
                 "query": {"type": "string",
                           "description": "The question. Without it, ranking is query-blind."},
-                "budget": {"type": "integer",
+                "budget": {"type": "integer", "minimum": 0,
                            "description": "Character budget; default 2200."},
                 "force_similarity": {"type": "boolean",
                                      "description": ("Pin query-similarity ranking on/off for "
@@ -112,12 +113,12 @@ TOOLS = [
     },
     {
         "name": "memory_refresh",
-        "description": ("Session boundary: fold accrued decay, consolidate near-duplicates, "
+        "description": ("Session boundary: fold accrued decay, consolidate identical text, "
                         "optionally prune to a storage ceiling (weakest archived entries only)."),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "max_entries": {"type": "integer",
+                "max_entries": {"type": "integer", "minimum": 0,
                                 "description": "Storage ceiling; 0 or omit keeps everything."},
             },
         },
@@ -144,9 +145,16 @@ class McpServer:
             return None
         try:
             message = json.loads(line)
-        except ValueError:
-            return self._error(None, -32700, "parse error")
-        response = self.handle_message(message)
+        except (ValueError, RecursionError):
+            return json.dumps(self._error(None, -32700, "parse error"))
+        try:
+            response = self.handle_message(message)
+        except Exception as exc:
+            # Unexpected implementation failures are visible, but cost one
+            # request rather than killing a long-running stdio server.
+            print("MCP internal error: %s" % exc, file=sys.stderr)
+            response = (self._error(message.get("id"), -32603, "internal error")
+                        if isinstance(message, dict) and "id" in message else None)
         return None if response is None else json.dumps(response)
 
     def handle_message(self, message: Any) -> Optional[Dict[str, Any]]:
@@ -156,15 +164,24 @@ class McpServer:
             return self._error(None, -32600, "invalid request: expected a JSON-RPC object")
         method = message.get("method")
         msg_id = message.get("id")
-        params = message.get("params") or {}
+        valid_id = (msg_id is None or isinstance(msg_id, str)
+                    or type(msg_id) is int
+                    or (type(msg_id) is float and math.isfinite(msg_id)))
+        if message.get("jsonrpc") != "2.0" or not isinstance(method, str) or not valid_id:
+            return self._error(None, -32600, "invalid request envelope")
+        # Requests without an id are notifications, including unknown methods.
+        # They receive no response and cannot invoke mutating request tools.
+        if "id" not in message:
+            return None
+        params = message.get("params", {})
+        if not isinstance(params, dict):
+            return self._error(msg_id, -32602, "params must be an object")
         if method == "initialize":
             return self._result(msg_id, {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {}},
                 "serverInfo": SERVER_INFO,
             })
-        if method in ("notifications/initialized", "notifications/cancelled"):
-            return None  # notifications get no response
         if method == "ping":
             return self._result(msg_id, {})
         if method == "tools/list":
@@ -176,7 +193,27 @@ class McpServer:
     # --------------------------------------------------------------- tools
     def _call_tool(self, msg_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         name = params.get("name")
-        args = params.get("arguments") or {}
+        args = params.get("arguments", {})
+        tool = next((tool for tool in TOOLS if tool["name"] == name), None)
+        if tool is None:
+            return self._error(msg_id, -32602, "unknown or missing tool name")
+        if not isinstance(args, dict):
+            return self._error(msg_id, -32602, "arguments must be an object")
+        schema = tool["inputSchema"]
+        for field in schema.get("required", []):
+            if field not in args:
+                return self._error(msg_id, -32602, "missing argument: %s" % field)
+        # The seven tools use only flat primitive schemas. Validate that small
+        # existing contract rather than adding a JSON Schema dependency.
+        types = {"string": str, "integer": int, "boolean": bool}
+        for field, value in args.items():
+            spec = schema["properties"].get(field)
+            if spec is None or type(value) is not types[spec["type"]]:
+                return self._error(msg_id, -32602, "invalid argument: %s" % field)
+            if type(value) is int and value < spec.get("minimum", 0):
+                return self._error(msg_id, -32602, "%s must be non-negative" % field)
+            if field in ("content", "id", "supersedes", "superseded_by") and not value.strip():
+                return self._error(msg_id, -32602, "%s must not be empty" % field)
         try:
             result = self._dispatch(name, args)
         except Exception as exc:
@@ -202,7 +239,7 @@ class McpServer:
             memory_id = engine.add(
                 content,
                 category=args.get("category", "general"),
-                protected=bool(args.get("protected", False)),
+                protected=args.get("protected", False),
                 supersedes=args.get("supersedes"),
             )
             engine.save()
@@ -221,7 +258,7 @@ class McpServer:
             return {"ok": bool(ok), "id": memory_id}
         if name == "memory_recall":
             result = engine.recall(
-                budget=int(args.get("budget", 2200)),
+                budget=args.get("budget", 2200),
                 query=args.get("query"),
                 force_similarity=args.get("force_similarity"),
             )
@@ -234,7 +271,7 @@ class McpServer:
                 "budget": result.budget,
             }
         if name == "memory_refresh":
-            report = engine.refresh(max_entries=int(args.get("max_entries", 0)))
+            report = engine.refresh(max_entries=args.get("max_entries", 0))
             engine.save()
             return report
         if name == "memory_stats":
@@ -261,8 +298,8 @@ def selftest() -> int:
         checks += 1
         assert condition, message
 
-    with tempfile.TemporaryDirectory() as tmp:
-        engine = MyelinatedMemory(path=os.path.join(tmp, "store.json"))
+    with tempfile.TemporaryDirectory() as tmp, MyelinatedMemory(
+            path=os.path.join(tmp, "store.json")) as engine:
         server = McpServer(engine)
 
         reply = json.loads(server.handle_line(
@@ -327,13 +364,17 @@ def main(argv: Optional[list] = None) -> int:
     if args.selftest:
         return selftest()
 
-    engine = MyelinatedMemory(path=args.store)
-    server = McpServer(engine)
-    for line in sys.stdin:
-        response = server.handle_line(line)
-        if response is not None:
-            sys.stdout.write(response + "\n")
-            sys.stdout.flush()
+    try:
+        with MyelinatedMemory(path=args.store) as engine:
+            server = McpServer(engine)
+            for line in sys.stdin:
+                response = server.handle_line(line)
+                if response is not None:
+                    sys.stdout.write(response + "\n")
+                    sys.stdout.flush()
+    except (ValueError, RuntimeError, OSError) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
     return 0
 
 

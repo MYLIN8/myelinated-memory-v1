@@ -80,6 +80,7 @@ def store_fixtures():
     engine.retire(ids[0], superseded_by=ids[1])
     engine.save()
     check(not os.path.exists(path + ".tmp"), "save: no temp file left behind")
+    engine.close()
 
     loaded = myelinate.MyelinatedMemory(path=path)
     original = {m.id: m for m in engine.all()}
@@ -329,7 +330,7 @@ def protocol_fixtures():
             check(parsed.get("error", {}).get("code") == -32600,
                   "S1: non-object line answered with a parse/invalid error")
 
-    # S2: tool arguments that raise non-ValueError must come back as isError.
+    # Invalid parameters are protocol errors, distinct from tool execution errors.
     for args in ({"name": "memory_recall", "arguments": {"budget": None}},
                  {"name": "memory_refresh", "arguments": {"max_entries": None}},
                  {"name": "memory_add", "arguments": {"content": ""}},
@@ -341,8 +342,8 @@ def protocol_fixtures():
         except Exception:
             crashed, response = True, None
         check(not crashed, "S2: tool call does not crash: %s" % args.get("name"))
-        check(response is not None and response.get("result", {}).get("isError") is True,
-              "S2: failing tool call is an isError result: %s" % args.get("name"))
+        check(response is not None and response.get("error", {}).get("code") == -32602,
+              "S2: invalid tool parameters are rejected: %s" % args.get("name"))
 
     # The server must still be alive and correct after every hostile line.
     alive = rpc_json({"jsonrpc": "2.0", "id": 9, "method": "ping"})
@@ -387,86 +388,51 @@ def protocol_fixtures():
 
 
 def concurrency_fixtures():
-    # The contract: save() writes a temp file and renames it over the store,
-    # so the path never names a partial file - but there is no locking. Two
-    # writers silently supersede each other (last-write-wins) and the loser
-    # keeps serving stale state; a concurrent reader always sees one complete
-    # generation, never a torn file.
-    path = os.path.join(tempfile.gettempdir(), "adv-concurrent.json")
-    if os.path.exists(path):
-        os.remove(path)
-    first = myelinate.MyelinatedMemory(path=path)
-    first.add("the first writer's memory", now=0.0)
-    first.save()
-    second = myelinate.MyelinatedMemory(path=path)
-    second.load()
-    second.add("the second writer's memory", now=1.0)
-    second.save()
-    first.add("a stale write from the first writer", now=2.0)
-    first.save()
-    loser = myelinate.MyelinatedMemory(path=path)
-    loser.load()
-    contents = [m.content for m in loser.all()]
-    check("the second writer's memory" not in contents
-          and "a stale write from the first writer" in contents,
-          "concurrency: the last writer wins and the loser is silent")
-    # A writer publishing numbered generations while a reader loads in a tight
-    # loop: every read must parse and must name exactly one published
-    # generation (an older one is fine - that is last-write-wins from the
-    # reader's side; a partial one is a torn file and fails).
-    if os.path.exists(path):
-        os.remove(path)
-    announced: list = []
-    failures: list = []
-    stop = threading.Event()
+    """Only one engine owns a store; raw observers still see complete JSON."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "concurrent.json")
+        with myelinate.MyelinatedMemory(path=path) as writer:
+            memory_id = writer.add("generation 0")
+            writer.save()
+            try:
+                myelinate.MyelinatedMemory(path=path)
+                refused = False
+            except RuntimeError:
+                refused = True
+            check(refused, "concurrency: second owner is refused before loading")
+            stop = threading.Event()
+            ready = threading.Event()
+            failures = []
 
-    def reader():
-        try:
-            while not stop.is_set():
+            def reader():
                 try:
-                    # The constructor loads the store itself, so it is inside
-                    # the try: a torn file would crash construction, not just
-                    # load(), and that must count as a bad read too.
-                    probe = myelinate.MyelinatedMemory(path=path)
-                    probe.load()
+                    while not stop.is_set():
+                        with open(path, encoding="utf-8") as handle:
+                            payload = json.load(handle)
+                        memories = payload["memories"]
+                        if len(memories) != 1 or not memories[0]["content"].startswith("generation "):
+                            failures.append("partial generation")
+                        ready.set()
                 except Exception as exc:
-                    failures.append("unreadable: %r" % (exc,))
-                    continue
-                seen = [m.content for m in probe.all()]
-                if not seen:
-                    continue  # no generation published yet
-                if len(seen) != 1 or not seen[0].startswith("generation "):
-                    failures.append("partial: %r" % (seen,))
-                    continue
-                try:
-                    gen = int(seen[0].split()[-1])
-                except ValueError:
-                    failures.append("partial: %r" % (seen,))
-                    continue
-                if gen not in announced:
-                    failures.append("unpublished: %r" % (seen,))
-        except Exception as exc:
-            # A dying reader must fail the check, not pass it vacuously: a
-            # thread dead from an exception is not alive and leaves no
-            # failures behind, so both checks below would pass on silence.
-            failures.append("reader died: %r" % (exc,))
+                    failures.append(str(exc))
+                    ready.set()
 
-    # Daemonic so a writer-side failure fails fast: otherwise stop is never
-    # set and a spinning non-daemon reader would hang the suite instead of
-    # exiting on the failed assertion.
-    thread = threading.Thread(target=reader, daemon=True)
-    thread.start()
-    for gen in range(60):
-        announced.append(gen)
-        engine = myelinate.MyelinatedMemory(in_memory=True)
-        engine.add("generation %d" % gen, now=float(gen))
-        engine.save(path)
-    stop.set()
-    thread.join(timeout=60)
-    check(not thread.is_alive(), "concurrency: the reader thread finishes")
-    check(not failures,
-          "concurrency: no torn file is ever readable (%d bad reads)"
-          % len(failures))
+            thread = threading.Thread(target=reader, daemon=True)
+            thread.start()
+            try:
+                check(ready.wait(10), "concurrency: observer starts before writes")
+                for gen in range(1, 60):
+                    # This test changes only serialised content, not retrieval indexes.
+                    writer.get(memory_id).content = "generation %d" % gen
+                    writer.save()
+            finally:
+                stop.set()
+                thread.join(timeout=10)
+            check(not thread.is_alive(), "concurrency: observer finishes")
+            check(not failures, "concurrency: observer sees complete generations")
+        with myelinate.MyelinatedMemory(path=path) as successor:
+            check(successor.get(memory_id).content == "generation 59",
+                  "concurrency: next owner retains the last saved generation")
 
 
 def main():

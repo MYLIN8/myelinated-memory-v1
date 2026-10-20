@@ -21,7 +21,8 @@ able to attribute any improvement to a named change:
     similarity=True   blend query similarity into recall ranking   (R1)
     knapsack=True     pack the budget by expected value per char   (R4/R7)
     stale_retirement=True   honour supersede/retire                (R5)
-    auto_supersede=True     store a changed-value update instead of absorbing it (D14/R5b)
+    exact_identity=True    collapse identical text only; application safety default
+    auto_supersede=True    inferred updates in historical exact_identity=False arms only
 
 With the first three off the engine behaves exactly as the original specification
 describes, which is what the "M6 pure" benchmark arm measures.
@@ -36,6 +37,7 @@ import math
 import os
 import re
 import sys
+import tempfile
 import time
 import zlib
 from dataclasses import asdict, dataclass, field
@@ -45,7 +47,7 @@ SCHEMA_VERSION = 3
 # The released version, in one place: scripts/myelinated_mcp.py advertises it to
 # every MCP client, and benchmarks/test_engine.py pins it to the newest heading in
 # CHANGELOG.md, so a release cannot leave the two disagreeing.
-__version__ = "5.4.0"
+__version__ = "5.5.0"
 DEFAULT_STORE = os.path.expanduser("~/.hermes/memory/myelinated.json")
 DEFAULT_BUDGET = 2200
 SECONDS_PER_DAY = 86400.0
@@ -303,6 +305,7 @@ class MyelinatedMemory:
         stale_retirement: bool = True,
         auto_supersede: bool = True,
         *,
+        exact_identity: bool = True,
         prior_weight: Optional[float] = None,
         max_candidates: Optional[int] = None,
         max_postings_scan: Optional[int] = None,
@@ -310,7 +313,9 @@ class MyelinatedMemory:
     ):
         # ``in_memory=True`` keeps the engine entirely in RAM and never reads or
         # writes the user store. The benchmark harness embeds it this way.
-        self.path = "" if in_memory else (path or os.environ.get("HERMES_MEMORY_STORE") or DEFAULT_STORE)
+        self._path = ""
+        self._lock = None
+        self._closed = False
         self.clock = clock
         self.similarity = similarity
         self.knapsack = knapsack
@@ -320,6 +325,9 @@ class MyelinatedMemory:
         # wording is retired, instead of the new text being silently absorbed. Its own
         # switch so a future ablation arm can attribute it (BM-002).
         self.auto_supersede = auto_supersede
+        # Historical benchmark arms opt out explicitly; application defaults
+        # never infer fact identity or replacement from token overlap.
+        self.exact_identity = exact_identity
 
         # Recall parameters, resolvable per instance. These were module constants,
         # so attributing a ranking change to the constant it varies meant editing
@@ -349,8 +357,13 @@ class MyelinatedMemory:
         self._dvec: Dict[str, Dict[str, float]] = {}
         self._dnorm: Dict[str, float] = {}
 
-        if self.path and os.path.exists(self.path):
-            self.load()
+        if not in_memory:
+            try:
+                self._claim_store(path or os.environ.get("HERMES_MEMORY_STORE") or DEFAULT_STORE)
+                self.load()
+            except Exception:
+                self.close()
+                raise
 
     # --------------------------------------------------------------- strength
     def strength(self, mem: "Memory", now: float) -> float:
@@ -415,6 +428,9 @@ class MyelinatedMemory:
             candidate = "m-%s-%d" % (digest, suffix)
         return candidate
 
+    def _identity_key(self, content: str) -> str:
+        return content.strip() if self.exact_identity else normalize(content)
+
     # --------------------------------------------------------------- indexing
     def _index_insert(self, mem: Memory) -> None:
         self._tok[mem.id] = frozenset(_tokens(mem.content))
@@ -422,7 +438,7 @@ class MyelinatedMemory:
         # inserted memories and probed memories land in different buckets.
         sketch = self._sketch_for_content(mem.content)
         self._sketch_cache[mem.id] = sketch
-        self._norm[normalize(mem.content)] = mem.id
+        self._norm[self._identity_key(mem.content)] = mem.id
         for key in self._bands(sketch):
             self._sketch_index.setdefault(key, []).append(mem.id)
         self._sim_dirty = True
@@ -431,7 +447,9 @@ class MyelinatedMemory:
         self._touched.discard(mem.id)
         sketch = self._sketch_cache.pop(mem.id, None)
         self._tok.pop(mem.id, None)
-        self._norm.pop(normalize(mem.content), None)
+        key = self._identity_key(mem.content)
+        if self._norm.get(key) == mem.id:
+            self._norm.pop(key)
         for key in self._bands(sketch or ()):
             ids = self._sketch_index.get(key)
             if ids and mem.id in ids:
@@ -495,11 +513,13 @@ class MyelinatedMemory:
         the dead entry it replaced: the new text was stored nowhere and recall came
         back empty.
         """
-        exact_id = self._norm.get(normalize(content))
+        exact_id = self._norm.get(self._identity_key(content))
         if exact_id is not None:
             exact = self.memories.get(exact_id)
             if exact is not None and not exact.retired:
                 return exact
+        if self.exact_identity:
+            return None
         tokens = frozenset(_tokens(content))
         size = len(tokens)
         for candidate_id in self._candidates(self._sketch_for_content(content)):
@@ -514,12 +534,9 @@ class MyelinatedMemory:
         return None
 
     def _same_fact(self, content: str, other: "Memory") -> bool:
-        """True when the content has the same token *set* as ``other``.
-
-        A restatement (punctuation, whitespace, case) collapses into one entry as
-        before. A same-subject pair whose token set differs is an update, and an
-        update must keep its own text (D14).
-        """
+        """Conservative text identity, or the unsafe historical benchmark rule."""
+        if self.exact_identity:
+            return self._identity_key(content) == self._identity_key(other.content)
         return frozenset(_tokens(content)) == self._tok_of(other)
 
     # ------------------------------------------------------------------- api
@@ -532,13 +549,20 @@ class MyelinatedMemory:
         now: Optional[float] = None,
         supersedes: Optional[str] = None,
     ) -> str:
-        """Add a memory. Near-duplicates collapse into the existing entry."""
+        """Collapse identical text; replace distinct facts only with supersedes."""
         now = self.clock() if now is None else now
         content = (content or "").strip()
         if not content:
             raise ValueError("content must not be empty")
+        if memory_id is not None and memory_id in self.memories:
+            raise ValueError("memory id already exists: %s" % memory_id)
 
         duplicate = self._find_duplicate(content)
+        if supersedes is not None and self.stale_retirement:
+            if supersedes not in self.memories:
+                raise ValueError("unknown supersedes id: %s" % supersedes)
+            if supersedes == memory_id or (duplicate is not None and supersedes == duplicate.id):
+                raise ValueError("a memory cannot supersede itself")
         if duplicate is not None and self._same_fact(content, duplicate):
             mem_id = self._collapse_into(duplicate, protected=protected, now=now)
         else:
@@ -583,12 +607,7 @@ class MyelinatedMemory:
         now: float,
         duplicate: Optional["Memory"],
     ) -> str:
-        """Store ``content`` as a new entry, superseding ``duplicate``'s wording.
-
-        When ``duplicate`` is a live memory with a *different* token set, this is an
-        update (same subject, changed value), so the older wording is retired and
-        what recall surfaces is the correction rather than the stale text.
-        """
+        """Store distinct text; infer replacement only for legacy benchmark arms."""
         mem = Memory(
             id=memory_id or self._new_id(content),
             content=content,
@@ -605,7 +624,8 @@ class MyelinatedMemory:
         self.memories[mem.id] = mem
         self._index_insert(mem)
         self._touch(mem)
-        if duplicate is not None and self.auto_supersede and self.stale_retirement:
+        if (not self.exact_identity and duplicate is not None
+                and self.auto_supersede and self.stale_retirement):
             self.retire(duplicate.id, superseded_by=mem.id)
         return mem.id
 
@@ -779,6 +799,7 @@ class MyelinatedMemory:
         del self.memories[mem.id]
         self._index_remove(mem)
         self._touch(target)
+        self._norm[self._identity_key(target.content)] = target.id
 
     def _collapse_duplicates(self, touched_ids: List[str]) -> int:
         merged = 0
@@ -797,6 +818,12 @@ class MyelinatedMemory:
             if mem.id not in self.memories or mem.retired:
                 # Already merged away by an earlier pass, or retired: a retired memory
                 # is never a merge candidate and never a merge winner (D13).
+                continue
+            if self.exact_identity:
+                other = self.memories.get(self._norm.get(self._identity_key(mem.content)))
+                if other is not None and other.id != mem.id and not other.retired:
+                    self._merge_into(other, mem)
+                    merged += 1
                 continue
             tokens = self._tok_of(mem)
             size = len(tokens)
@@ -1029,6 +1056,81 @@ class MyelinatedMemory:
         return result
 
     # ------------------------------------------------------------ persistence
+    @property
+    def path(self) -> str:
+        return self._path
+
+    def _claim_store(self, path: str) -> None:
+        """Own a stable sidecar before reading a writable snapshot.
+
+        ponytail: one owner per local store; use transactions if concurrent
+        writers become a supported workload. Never unlink the lock sidecar.
+        """
+        target = os.path.realpath(os.path.abspath(os.path.expanduser(os.fspath(path))))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        handle = open(target + ".lock", "a+b")
+        try:
+            if os.name == "posix":
+                import fcntl
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            elif os.name == "nt":
+                import msvcrt
+                if os.fstat(handle.fileno()).st_size == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                raise RuntimeError("store locking is unsupported on %s" % os.name)
+        except OSError as exc:
+            handle.close()
+            raise RuntimeError("store busy or lock unavailable: %s; close its other owner "
+                               "and retry (do not delete the store or lock file)" % target) from exc
+        except Exception:
+            handle.close()
+            raise
+        self._path = target
+        self._lock = handle
+
+    def _owned_path(self, path: Optional[str], saving: bool = False) -> str:
+        if self._closed:
+            raise RuntimeError("memory store is closed")
+        if path is not None:
+            target = os.path.realpath(os.path.abspath(os.path.expanduser(os.fspath(path))))
+            if self.path and target != self.path:
+                raise ValueError("cannot switch an owned store; open a new engine for %s" % target)
+            if not self.path:
+                # An in-memory snapshot cannot overwrite an existing store it
+                # never loaded. load(path) is the explicit adoption path.
+                if saving and os.path.exists(target):
+                    raise ValueError("refusing to overwrite an existing store; load it first")
+                self._claim_store(target)
+                # Check again under ownership: another owner may have created
+                # the file between the initial check and acquiring the lock.
+                if saving and os.path.exists(target):
+                    self.close()
+                    raise ValueError("refusing to overwrite an existing store; load it first")
+        return self.path
+
+    def close(self) -> None:
+        """Release ownership without saving; close is idempotent."""
+        handle = getattr(self, "_lock", None)
+        if handle is not None:
+            handle.close()
+            self._lock = None
+        self._closed = True
+
+    def __enter__(self) -> "MyelinatedMemory":
+        if self._closed:
+            raise RuntimeError("memory store is closed")
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
+
     def to_dict(self) -> Dict:
         return {
             "schema": SCHEMA_VERSION,
@@ -1036,21 +1138,27 @@ class MyelinatedMemory:
         }
 
     def save(self, path: Optional[str] = None) -> str:
-        target = path or self.path
+        target = self._owned_path(path, saving=True)
         if not target:
             return ""
-        parent = os.path.dirname(os.path.abspath(target))
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        tmp = target + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(self.to_dict(), handle, indent=2, sort_keys=True)
-            handle.write("\n")
-        os.replace(tmp, target)
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                    dir=os.path.dirname(target), prefix=os.path.basename(target) + ".",
+                    suffix=".tmp", delete=False) as handle:
+                tmp = handle.name
+                json.dump(self.to_dict(), handle, indent=2, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, target)
+        finally:
+            if tmp is not None and os.path.exists(tmp):
+                os.unlink(tmp)
         return target
 
     def load(self, path: Optional[str] = None) -> int:
-        target = path or self.path
+        target = self._owned_path(path)
         if not target or not os.path.exists(target):
             return 0
         with open(target, "r", encoding="utf-8") as handle:
@@ -1270,8 +1378,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     kwargs = {"similarity": False, "knapsack": False, "stale_retirement": False} if args.pure else {}
     try:
-        engine = MyelinatedMemory(path=args.store, **kwargs)
-    except ValueError as exc:
+        with MyelinatedMemory(path=args.store, **kwargs) as engine:
+            return args.handler(engine, args)
+    except (ValueError, RuntimeError, OSError) as exc:
         # Corrupt, wrong-shaped or future-schema store: a clean message and exit 2,
         # never a traceback on the terminal that asked for a one-liner.
         print("error: %s" % exc, file=sys.stderr)
@@ -1279,7 +1388,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Every subcommand binds its own handler in the parser, so a command that
     # appears in --help always has something behind it: a phantom init/save/load
     # once shipped with no handler, and reached users as a bare exit 2.
-    return args.handler(engine, args)
 
 
 if __name__ == "__main__":

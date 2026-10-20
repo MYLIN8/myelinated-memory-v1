@@ -1,7 +1,7 @@
 ---
 name: myelinated-memory
 description: "Use when managing a limited context budget across stored memories: tiered recall, session-boundary consolidation, supersession."
-version: 5.4.0
+version: 5.5.0
 author: Hermes Agent
 tags: [memory, myelination, recall, prioritization, context-budget]
 ---
@@ -21,13 +21,13 @@ The mechanism is implemented and benchmarked; the claim that comes with the name
 
 1. **Session start:** `refresh` (decay, then consolidate). Then `recall --query "<the question>"`.
 2. **During session:** `access <memory_id>` for a memory that was actually used. `pin <memory_id>` for anything safety-critical or identity-fixed — pinned memories never decay and are never crowded out.
-3. **Adding memories:** `add --content "..." --category <category>`. Near-duplicates collapse into the existing entry; a memory that is ≥ 0.90 similar but whose value words differ is treated as an **update** — the new wording is stored and the old entry is retired for you. Protected entries are never archived.
-4. **Changing facts:** `retire <old_id>`, or `add --content "..." --supersedes <old_id>`. An explicit signal is still the clearest one — do not rely on the engine inferring an update.
+3. **Adding memories:** `add --content "..." --category <category>`. Only identical text after outer trimming collapses. Different wording, case, numbers and word order remain distinct; similarity does not establish an update. Protected entries are never archived.
+4. **Changing facts:** `retire <old_id>`, or `add --content "..." --supersedes <old_id>`. Explicitly identify the old fact; invalid or self-supersession is refused before mutation.
 
 ## Commands
 
 ```bash
-# Session-boundary automation: decay every memory, then consolidate (merge near-duplicates)
+# Session-boundary automation: decay every memory, then consolidate identical text
 python3 scripts/myelinate.py refresh
 
 # Add a memory. --category sets the decay rate per dormant day:
@@ -63,6 +63,9 @@ curve and frequent `refresh` calls cannot over-decay the store (defect D1, fixed
 
 ## Known limits
 
+Numerical figures below describe the historical 5.4.0 controls. The 5.5.0 default
+is measured separately in `docs/REPAIR-RESULTS.md`.
+
 Read these before relying on this skill. Each is tracked with a fix in
 [`docs/FIX-PLAN.md`](docs/FIX-PLAN.md).
 
@@ -83,7 +86,7 @@ Read these before relying on this skill. Each is tracked with a fix in
   against 0.703 for the shipped engine and 0.694 for round 4's configuration). The measured win
   over *flat* memory is budget allocation: 1293 characters per evidence hit against a flat
   store's 1742.
-- **One writer per store.** Concurrent writers are last-write-wins with no lock: the last `save()` silently supersedes the other writer's memories, and the superseded writer keeps serving stale state. Readers are safe — they always see one complete generation, never a torn file. Do not run two session hooks against the same store file.
+- **One owner per local store, enforced.** A second engine or CLI targeting an owned store fails clearly. File-backed library users must `close()` or use a context manager; an MCP process owns its store until exit. Do not delete lock sidecars. Use separate stores or one owning process for multiple clients. See `docs/PORTABILITY.md` for platform and filesystem limits.
 - **Round 5 changed one shipped default.** `PRIOR_WEIGHT` — how much retrieval strength competes
   with query similarity for the ranking — is now **0.0** rather than 0.35, because measured on the
   public LoCoMo tier the strength term cost hit rate at every point above zero (0.683 at 0.0

@@ -29,7 +29,28 @@ m.retire(old_id, superseded_by=new_id)   # the fact changed
 m.pin(important_id)              # never decays, never crowded out
 m.refresh()                      # session boundary: decay + consolidate
 m.save()                         # atomic JSON write (temp file + rename)
+m.close()                        # release ownership; does not save
 ```
+
+For persistent stores prefer `with MyelinatedMemory(path="store.json") as m:`.
+Ownership is acquired before load and held until `close()`/context exit. A second
+engine targeting the same canonical local path fails before it can load stale
+state. Keep one MCP process per store; CLI commands targeting its store are
+refused while it runs. Raw JSON observers can read complete published snapshots.
+Use separate paths for independent agents. Threads must serialise calls to their
+owning engine; this is not a transactional multi-client service.
+
+Lock sidecars (`store.json.lock`) are permanent coordination files: never delete
+them while an engine may be running. OS locks are released on process exit,
+including a crash. POSIX and Windows use their standard-library OS primitives;
+other platforms refuse writable ownership. Network filesystems, hard-link aliases
+and programs ignoring the lock are outside this guarantee.
+
+`path` is canonical and read-only. `save(other_path)`/`load(other_path)` cannot
+switch an owned store. An in-memory engine can adopt a new path on first save,
+but cannot overwrite an existing store it never loaded; `load(path)` explicitly
+adopts and replaces its in-memory snapshot instead. A closed engine cannot save
+or load again: open a new instance. Store schema 3 and existing IDs are unchanged.
 
 Constructor knobs that matter:
 
@@ -37,6 +58,11 @@ Constructor knobs that matter:
 - `clock=…` — inject a virtual clock for replayable experiments.
 - `similarity`, `knapsack`, `stale_retirement`, `auto_supersede` — capability
   switches, so an ablation can attribute any change to one named mechanism.
+- `exact_identity=True` — application default: only identical text after outer
+  trimming collapses. Similarity never establishes that a different fact is an
+  update. Explicit `supersedes` is required to replace it. `exact_identity=False`
+  restores unsafe historical identity for benchmark controls only; the old
+  `auto_supersede` switch affects only those legacy controls.
 - `prior_weight`, `max_candidates`, `max_postings_scan`, `recall_pool` — per-instance
   recall parameters; `None` means module default, `0` means unbounded.
 - `recall(..., force_similarity=True/False)` — pin query-similarity on or off for
@@ -68,6 +94,11 @@ Tools exposed: `memory_add`, `memory_access`, `memory_retire`, `memory_pin`,
 `memory_recall`, `memory_refresh`, `memory_stats`. The protocol is plain
 JSON-RPC 2.0 over stdio, implemented in the standard library — the server has no
 third-party dependency and neither does the engine it wraps.
+
+Invalid envelopes/arguments produce protocol errors before dispatch; execution
+failures produce tool errors. Parse errors are JSON-encoded like other replies.
+Notifications receive no reply and cannot invoke mutating request tools. Errors
+do not stop subsequent requests; diagnostics are written to stderr.
 
 ## 3. LangChain-style retriever
 
@@ -107,8 +138,8 @@ plain RAG pipeline: store on the way in, `recall()` on the way out.
 1. **Session start** — `memory_refresh`, then `memory_recall` with the question.
 2. **During the session** — `memory_access` for each memory actually used;
    `memory_pin` for safety-critical or identity facts.
-3. **New facts** — `memory_add` (near-duplicates collapse; a changed-value update
-   supersedes the older wording automatically).
+3. **New facts** — `memory_add` (identical text collapses; different wording is
+   retained as a distinct fact).
 4. **Corrections** — `memory_retire`, or `memory_add` with `supersedes=…`.
 
 ## Invariants every front door shares
@@ -123,6 +154,10 @@ plain RAG pipeline: store on the way in, `recall()` on the way out.
   (see `SECURITY.md`).
 
 ## Known limits (read before relying on it)
+
+The numerical comparisons below describe the historical 5.4.0 run. They are not
+measurements of the 5.5.0 conservative default; see `REPAIR-RESULTS.md` and
+`REPAIR-VERIFICATION.md` for the new comparison and its limits.
 
 - Decay-alone retirement is unproven: with an explicit `retire`/`supersede` signal
   stale facts leak 0.000; without one the default arm still leaks 1.000.

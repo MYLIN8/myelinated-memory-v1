@@ -2,6 +2,19 @@
 
 > **A Hebbian retrieval-strength memory engine for LLM Agents.**
 
+> [!IMPORTANT]
+> **5.5.0 safety changes:** identical text alone is deduplicated; distinct facts
+> require explicit `supersedes` to replace one another. A file-backed engine
+> exclusively owns its local store until `close()`/context exit; competing
+> owners fail rather than overwrite data. MCP rejects malformed input and keeps
+> serving subsequent requests. See [the current integration contract](docs/PORTABILITY.md).
+>
+> **Benchmark provenance:** the numerical tables below and `benchmarks/RESULTS.md`
+> remain the historical 5.4.0 record. They do not establish the performance of
+> the new default. M6–M13 retain the historical configuration; M14 isolates the
+> conservative identity change. See [repair verification](docs/REPAIR-VERIFICATION.md)
+> and [the new full comparison](docs/REPAIR-RESULTS.md).
+
 [![License: Source-Available](https://img.shields.io/badge/license-Source--Available-red.svg)](LICENSE.md)
 [![Python 3.10 | 3.11](https://img.shields.io/badge/python-3.10%20%7C%203.11-3776ab.svg)](CONTRIBUTING.md)
 [![Zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](SECURITY.md)
@@ -53,7 +66,7 @@ All ten check suites are offline, free and run in seconds ([§4](#4-how-it-is-te
 *   **A budget that gets spent where it pays.** Full text, then a summary, then a 64-character gist, allocated by expected value per character, so a cheap summary can outrank an expensive full text. Measured in the committed report: **1293 characters per evidence hit against a flat FIFO store's 1742 and a recency cache's 2253**, and slightly below the strongest semantic baseline's 1310 — the one place this engine beats BM25 outright.
 *   **Retrieval that competes with a semantic index.** The engine's own TF-IDF cosine ranker reaches **0.895 evidence-hit rate**, level with the strongest baseline on this benchmark, and raises the public LoCoMo tier from 0.433 to **0.683**. It is deterministic and local: no model call, no embedding round-trip, no drift between runs.
 *   **Store semantics the others simply do not have.** With an explicit `retire`/`--supersedes` signal stale facts leak **0.000**, a *correction* is stored rather than absorbed into the old wording (D13/D14), `pin` holds a memory at full score against decay, pruning and crowding-out, and categories give each kind of fact its own decay rate.
-*   **Duplicate collapsing on write**, so a store does not fill up with paraphrases of one fact. Measured on a probe corpus (97.5% collapse at Jaccard 0.96, zero false merges), not yet on the benchmark.
+*   **Conservative identity on write and refresh.** Identical text after outer trimming collapses; different wording remains distinct. Historical approximate-collapse probe results apply only to the legacy controls.
 *   **It ships its own benchmark and reports its own losses**, including the criterion its own hero arm fails. The failures on this page are here on purpose: the fastest way to lose trust in a memory layer is to find its limits after you have already committed to it.
 
 ### How it compares, in one table
@@ -83,7 +96,7 @@ Which is worth saying plainly, because it is the most interesting result in this
 *   **Facts change and you cannot signal it.** Supersession works only with an explicit `retire`/`--supersedes` call; decay alone is still unproven (leak 1.000 with no signal — decision rule row 5 **fails**).
 *   **You need predictable latency figures.** Recall latency flips sign between identical runs on one host, and the report marks that criterion **informational**. The retrieval metrics are stable; the timing is not.
 *   **You feed untrusted text straight into a model.** Memory text is rendered verbatim into the context budget — it is a prompt-injection surface ([`SECURITY.md`](SECURITY.md)). Filter upstream.
-*   **Several processes write one store.** It is a single JSON file with an atomic rename on save and no locking: concurrent writers are last-write-wins (the loser is silent, not an error, and keeps serving stale state), while a concurrent reader always sees one complete generation, never a torn file. Run one writer.
+*   **Several processes write one store.** Only one engine owns a local JSON store at a time. A second owner fails clearly. File-backed library users must close the engine or use a context manager; a running MCP process retains ownership until shutdown.
 
 ---
 
@@ -166,12 +179,12 @@ Both packing paths respect the budget by construction: a block that would overfl
 
 The remaining engine-side machinery:
 
-* **Duplicate collapsing, with a restatement/update split** — a pair at `Jaccard ≥ 0.90` over content tokens whose token sets are *identical* is a restatement and collapses on write and again at refresh. A pair at the same threshold whose value words **changed** is not a duplicate but an update: round 4 (D13/D14) stores the newer wording as a new memory and retires the older one with `superseded_by` set, instead of silently absorbing the newer text into the dead entry. The split is gated by `auto_supersede=True` so it can be ablated. Candidates come from a MinHash bottom-8 sketch index in LSH bands rather than a full postings scan: the postings version profiled at ~2.9M Jaccard calls per 10,000 memories. Single-hash keys were chosen after 2-hash bands measured only 62.6% recall at Jaccard 0.93 — a documented feature silently missing a third of real duplicates.
+* **Conservative duplicate collapsing** — only identical text after outer trimming is automatically collapsed, on write and refresh. Case, punctuation, numbers, repetition and word order can carry meaning. Historical approximate merging is available only to reproduce the legacy benchmark controls (`exact_identity=False`).
 * **Clustering at refresh — removed in 5.4.0.** A `Jaccard ≥ 0.50` pass used to assign each touched memory a cluster representative that nothing read. It is deleted, not disabled: `refresh()` no longer returns a `clusters` key (a labelled protocol change; pre-5.4 stores load and re-save cleanly).
-* **Supersession** — `retire(id)` marks a fact dead; `add(content, supersedes=old_id)` adds the replacement and retires the old one in a single step. Since round 4 an update that is ≥ 0.90 similar to a live or retired memory is detected and handled automatically (see above), so an explicit signal is an optimisation rather than the only way to correct a fact. `retired_excluded` reports how many memories were filtered out of a recall, and `retire()` invalidates the similarity index (D9).
+* **Supersession** — `retire(id)` marks a fact dead; `add(content, supersedes=old_id)` explicitly identifies the replacement. Similarity alone never retires another fact in the application default. Invalid or self-supersession is rejected before mutation. `retired_excluded` reports memories excluded from recall.
 * **Pinning** — `pin(id)` (or `--protected`) sets the score to 1.0, exempts the memory from decay, and gives it an effectively infinite prior (`1e6`) so it is never crowded out by relevance, and exempts it from pruning.
 * **Pruning** — optional storage ceiling (`refresh --max-entries N`), which removes the weakest **archived** memories only, never pinned or live ones. The default is unbounded: archived entries are kept.
-* **Persistence** — `save()` writes JSON atomically (temp file + `os.replace`), `load()` rebuilds the indexes, tolerates unknown fields, and marks the similarity index dirty. The concurrency contract is last-write-wins with no lock: two writers silently supersede each other, and a reader always sees a complete generation, never a torn file (pinned by the adversarial suite's concurrency fixtures). The store path resolves as explicit `--store` → `HERMES_MEMORY_STORE` → `~/.hermes/memory/myelinated.json`. The schema is now versioned (`SCHEMA_VERSION = 3`) and there **is** a migration path: a version-2 store is upgraded on load by setting `score_at` from `last_access` (or `created`), because a missing anchor would otherwise start decay at the epoch and archive the whole store.
+* **Persistence** — file-backed engines acquire exclusive local-store ownership before load and release it on `close()`/context exit. `save()` uses a unique temporary file and atomic replacement. Competing owners fail clearly. `path` is canonical and cannot be switched after ownership. The path precedence remains `--store` → `HERMES_MEMORY_STORE` → `~/.hermes/memory/myelinated.json`; schema 3 and v2 migration are unchanged. See [the lifecycle and platform contract](docs/PORTABILITY.md).
 
 ---
 

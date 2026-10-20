@@ -17,6 +17,25 @@ then regenerated it from the round-5 code, so the committed report and the
 figures quoted under [5.1.0] are the same run, and 5.0.0's table stands as the
 hold-out confirmation of it.
 
+## [5.5.0] - Unreleased
+
+### Memory safety protocol changes
+
+- The application default collapses only identical text after outer trimming.
+  Token overlap no longer silently merges distinct facts or retires an inferred
+  replacement. Use `supersedes` explicitly; invalid/self targets fail before mutation.
+- File-backed engines hold exclusive local-store ownership from loading until
+  `close()`. Use a context manager; competing owners fail rather than lose updates.
+  Saves use unique temporary files, flush before replacement and clean up failures.
+- MCP validates envelopes and primitive tool arguments before dispatch, serialises
+  parse errors consistently, and keeps processing after invalid input.
+- Historical M6-M13 benchmark arms retain legacy identity. M14 is M11 with only
+  conservative identity enabled. Prior benchmark figures describe 5.4.0, not this
+  new default. See `docs/REPAIR-VERIFICATION.md` for the frozen verification plan.
+
+Schema 3 and existing IDs remain compatible. Previously discarded facts cannot
+be recovered by this repair. No external dependencies were added.
+
 ## [5.4.0] - 2026-10-10
 
 The round-6 closeout: cross-process determinism, the dead-code deletion, the concurrency

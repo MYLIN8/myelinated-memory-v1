@@ -738,7 +738,8 @@ class MyelinatedArm(TimedArm):
                  prior_weight: Optional[float] = None,
                  max_candidates: Optional[int] = None,
                  max_postings_scan: Optional[int] = None,
-                 recall_pool: Optional[int] = None) -> None:
+                 recall_pool: Optional[int] = None,
+                 exact_identity: bool = False) -> None:
         self.arm_name = name
         self.use_similarity = similarity
         self.use_knapsack = knapsack
@@ -752,6 +753,8 @@ class MyelinatedArm(TimedArm):
         self.max_candidates = max_candidates
         self.max_postings_scan = max_postings_scan
         self.recall_pool = recall_pool
+        # Preserve published M6-M13 controls; only M14 opts into the repair.
+        self.exact_identity = exact_identity
         self.supports_retirement = stale_retirement
         self.supports_reinforcement = reinforcement
         super().__init__()
@@ -771,6 +774,7 @@ class MyelinatedArm(TimedArm):
             max_candidates=self.max_candidates,
             max_postings_scan=self.max_postings_scan,
             recall_pool=self.recall_pool,
+            exact_identity=self.exact_identity,
         )
 
     def _add(self, content, *, memory_id=None, category="general", protected=False, now=0.0) -> str:
@@ -870,6 +874,9 @@ def build_arms(include_network: bool = False) -> List[Arm]:
         MyelinatedArm("M13 myelinated +supersession (auto-update off)",
                       similarity=True, knapsack=True, stale_retirement=True,
                       auto_supersede=False, prior_weight=LEGACY_PRIOR_WEIGHT),
+        # R13: exactly M11 with conservative identity. Keep negative results.
+        MyelinatedArm("M14 myelinated +exact identity", stale_retirement=True,
+                      reinforcement=True, exact_identity=True),
     ])
     return arms
 
@@ -892,6 +899,7 @@ ARM_ORDER = [
     "M11 myelinated +lexical ranking",
     "M12 myelinated +unbounded candidates",
     "M13 myelinated +supersession (auto-update off)",
+    "M14 myelinated +exact identity",
 ]
 
 

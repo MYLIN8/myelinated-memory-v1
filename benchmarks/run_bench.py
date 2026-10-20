@@ -56,9 +56,8 @@ CHECKPOINT_SECONDS = 20.0
 # remediation applied *at the time it was registered*. It is fixed and is never
 # swapped for whichever arm wins (BM-004); re-registering it is a decision-rule
 # change that needs a criteria-version bump, not an edit. Note that since round 5
-# the engine's shipped default is M11's configuration (PRIOR_WEIGHT is 0.0 while
-# M10 pins LEGACY_PRIOR_WEIGHT), so hero and shipped arm differ by that one
-# constant and the report prints both rather than quietly equating them.
+# 5.4.0 shipped M11's ordering; 5.5.0 additionally uses conservative identity
+# (M14). Keep the historical hero and controls rather than silently swapping them.
 HERO_ARM = "M10 myelinated +reinforcement"
 # The specification's behaviour, kept for attribution.
 PURE_ARM = "M6 myelinated (pure)"
@@ -872,18 +871,15 @@ def build_notes(include_network: bool) -> List[str]:
         "M3t/M3p/M3k are allocator controls, not baselines: they share BM25's ranking "
         "and vary only how the budget is filled, so they attribute the engine's "
         "budget win to its allocator rather than its store (round-4 design 4).",
-        "The engine arms are not one configuration. Since round 5 the shipped default "
-        "is PRIOR_WEIGHT = 0.0, which is M11's ordering; M6-M10 and M12 pin the "
-        "pre-round-5 LEGACY_PRIOR_WEIGHT = 0.35 so the round-4 rows stay reproducible, "
-        "and M12 additionally lifts the candidate ceilings (it reproduced M10 exactly, "
-        "which is how those ceilings were measured to be immaterial on these tiers). "
-        "The pre-registered hero is M10, so the hero row and M11's row are the "
-        "pre-registered configuration and the shipped one, one constant apart.",
-        "Supersession fires on an inferred update as well as on an explicit retire: a "
+        "The engine arms are not one configuration. M6-M13 retain historical identity; "
+        "M6-M10 and M12 retain LEGACY_PRIOR_WEIGHT = 0.35. M11 uses PRIOR_WEIGHT = 0.0. "
+        "M14 is M11 with conservative exact-text identity, the 5.5.0 application default. "
+        "The pre-registered hero remains M10; it has not been swapped after observing results.",
+        "In legacy arms only, supersession fires on an inferred update as well as on an explicit retire: a "
         "memory at Jaccard >= 0.90 whose value words changed (different token set) is "
         "stored and the superseded entry is retired, with no signal from the caller. "
         "That is a capability change, reported as one (BM-002), and it is why the "
-        "decay-only leak column can now move.",
+        "decay-only leak column can move. M14 does not infer updates; use explicit supersession.",
         "The decision rule is version 3, and every change in it is a repair of the "
         "same class of bug: an unmeasured criterion reports NOT MEASURED instead of a "
         "phantom FAIL, the scale latency criterion reports INFORMATIONAL instead of a "

@@ -54,6 +54,9 @@ jobs:
       - name: Engine suite (benchmarks/test_engine.py)
         run: python3 benchmarks/test_engine.py
 
+      - name: Memory safety repairs
+        run: python3 benchmarks/test_repairs.py
+
       - name: MCP server (scripts/myelinated_mcp.py --selftest)
         run: python3 scripts/myelinated_mcp.py --selftest
 
@@ -66,3 +69,20 @@ jobs:
           echo "and takes ~37 s. The LLM judge and the dense-embedding arm need a key and are opt-in."
           echo "benchmarks/chart.py is not a check: it renders charts from the committed raw.json."
           echo "benchmarks/pool_probe.py is a diagnostic (R11), not a check."
+
+  ownership-platforms:
+    name: store ownership (${{ matrix.os }}, python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        python-version: ["3.10", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Fact identity, ownership, crash recovery and MCP stdio
+        run: python benchmarks/test_repairs.py

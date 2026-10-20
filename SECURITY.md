@@ -16,12 +16,21 @@ security properties, and the earlier version of this file conflated them.
 - **Data access:** one local JSON file. The path is `--store PATH`, else `$HERMES_MEMORY_STORE`,
   else `~/.hermes/memory/myelinated.json`. `save()` writes a temporary file and renames it, so an
   interrupted write cannot leave a half-written store.
+- **Ownership:** an OS-backed sidecar lock is held from load until close. Another
+  engine targeting the same canonical local path is refused. Never delete the
+  sidecar while a writer may be active; process exit releases the OS lock. This
+  protects cooperating local engines, not network filesystems, hard-link aliases
+  or programs that ignore the lock. See `docs/PORTABILITY.md`.
+- **Fact identity:** only identical text after outer trimming collapses. Different
+  facts require explicit supersession; lexical similarity is not proof of identity.
 - **Untrusted input:** **memory content is data, never instructions, and nothing sanitises it.**
   The engine does not escape, validate or length-limit stored text, and it renders a memory into
   the context budget verbatim. If you inject third-party text (a web page, an email, a tool
   result) into the store, that text can attempt to steer whatever model later reads the context.
   Treat the store as an injection surface: keep untrusted content out, or filter it upstream.
-- **File permissions:** the store is created with the process umask; the engine does not set a mode.
+- **File permissions:** new store generations use a private temporary file (0600
+  on POSIX) before replacement. Sidecars use the process umask. Directory access
+  and Windows ACLs remain the deployer's responsibility.
 
 ### The benchmark harness (`benchmarks/`)
 

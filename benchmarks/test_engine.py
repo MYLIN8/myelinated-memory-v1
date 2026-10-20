@@ -227,9 +227,9 @@ def test_retired_memories_are_excluded_from_recall() -> None:
 def test_restatements_collapse_and_distinct_content_does_not() -> None:
     engine = _engine()
     engine.add("The deploy target for the web service is the staging cluster in eu-west.", now=T0)
-    engine.add("The deploy target for the web service is the staging cluster in eu-west!", now=T0)
+    engine.add("  The deploy target for the web service is the staging cluster in eu-west.  ", now=T0)
     engine.refresh(now=T0 + DAY)
-    ok(len(engine.memories) == 1, "the same token set must still collapse to one entry")
+    ok(len(engine.memories) == 1, "identical text after outer trimming collapses")
 
     engine.add("Lunch is at noon and the kitchen is on the second floor.", now=T0 + DAY)
     engine.refresh(now=T0 + 2 * DAY)
@@ -261,7 +261,7 @@ def test_an_update_keeps_its_own_wording() -> None:
 
     engine = _engine()
     original = engine.add(_UPDATE_A, now=T0)
-    updated = engine.add(_UPDATE_B, now=T0 + DAY)
+    updated = engine.add(_UPDATE_B, now=T0 + DAY, supersedes=original)
     ok(updated != original, "an update must not be absorbed by the memory it replaces")
     ok(engine.memories[updated].content == _UPDATE_B, "the new wording must be stored")
     ok(engine.memories[original].retired, "the superseded wording must be retired")
@@ -503,6 +503,7 @@ def test_persistence_round_trip() -> None:
                for i in range(3)]
         engine.save()
         ok(os.path.exists(path), "save() must write the store")
+        engine.close()
         reloaded = MyelinatedMemory(path=path)
         ok(reloaded.load() == 3, "load() must report every memory it read")
         ok(sorted(reloaded.memories) == sorted(ids), "ids must survive the round trip")
@@ -511,6 +512,8 @@ def test_persistence_round_trip() -> None:
                "scores must survive the round trip for %s" % memory_id)
         ok(engine.to_dict()["schema"] == reloaded.to_dict()["schema"], "the schema is written")
         ok(reloaded.to_dict()["schema"] == 3, "the schema version is the current one")
+        reloaded.close()
+        engine = MyelinatedMemory(path=path)
 
         # Unicode must survive save()/load() byte-for-byte. The store is written and
         # read as UTF-8, and a store that loads is still wrong if it re-encodes what
@@ -519,6 +522,7 @@ def test_persistence_round_trip() -> None:
         text = "用户偏好简洁回复 🧠 — no trailing space"
         unicode_id = engine.add(text, now=T0)
         engine.save()
+        engine.close()
         with open(path, "rb") as handle:
             stored_bytes = handle.read()
         stored_bytes.decode("utf-8")  # raises if the file is not valid UTF-8
@@ -527,6 +531,7 @@ def test_persistence_round_trip() -> None:
            "unicode content must survive save()/load() byte-for-byte")
         ok(unicode_engine.get(unicode_id).summary != "",
            "a unicode memory must keep a non-empty summary")
+        unicode_engine.close()
 
         # A v2 store has no `score_at`; it must migrate to a real decay baseline
         # rather than decaying from the epoch (decay from 0 would archive it).
@@ -538,17 +543,18 @@ def test_persistence_round_trip() -> None:
         migrated = MyelinatedMemory(path=path)
         ok(all(mem.score_at > 0 for mem in migrated.memories.values()),
            "a store without score_at must migrate to a non-zero baseline")
+        migrated.close()
 
 
 def test_store_path_precedence() -> None:
     explicit = "/tmp/explicit-store.json"
     ok(MyelinatedMemory(in_memory=True).path == "", "in_memory must never touch a store path")
-    ok(MyelinatedMemory(path=explicit).path == explicit, "an explicit path wins")
+    ok(MyelinatedMemory(path=explicit).path == os.path.realpath(explicit), "an explicit path wins")
     previous = os.environ.get("HERMES_MEMORY_STORE")
     try:
         os.environ["HERMES_MEMORY_STORE"] = "/tmp/env-store.json"
-        ok(MyelinatedMemory().path == "/tmp/env-store.json", "the env var is used when no path is given")
-        ok(MyelinatedMemory(path=explicit).path == explicit, "the explicit flag still wins")
+        ok(MyelinatedMemory().path == os.path.realpath("/tmp/env-store.json"), "the env var is used when no path is given")
+        ok(MyelinatedMemory(path=explicit).path == os.path.realpath(explicit), "the explicit flag still wins")
     finally:
         if previous is None:
             os.environ.pop("HERMES_MEMORY_STORE", None)
@@ -755,6 +761,7 @@ def test_cli_wiring() -> None:
         engine = MyelinatedMemory(path=store)
         engine.add("The deploy target is production.", category="identity", now=T0)
         engine.save()
+        engine.close()
         captured = {}
         original = MyelinatedMemory.recall
 
